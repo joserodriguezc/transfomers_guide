@@ -1,0 +1,133 @@
+import { quiz } from '../quizzes/razonamiento'
+import recompensas from '../snippets/razonamiento/01_recompensas.py?raw'
+import ventajas from '../snippets/razonamiento/02_grpo_ventajas.py?raw'
+import objetivo from '../snippets/razonamiento/03_grpo_objetivo.py?raw'
+import escalar from '../snippets/razonamiento/04_escalar_en_test.py?raw'
+import mcts from '../snippets/razonamiento/05_mcts.py?raw'
+import moe from '../snippets/razonamiento/06_moe.py?raw'
+
+<Section kind="why">
+
+Un LLM clásico responde «de un tirón»: cada token sale de una sola pasada. Los **modelos de razonamiento** (o1, DeepSeek-R1, Qwen3 en modo *thinking*, Kimi K2) **piensan antes de responder**: generan una cadena de razonamiento intermedia, prueban, se corrigen y solo después dan la respuesta. En matemáticas, programación y problemas de varios pasos, la diferencia es enorme.
+
+Dos ideas lo hacen posible, y ambas cambian la economía de los LLM. La primera es entrenar con **aprendizaje por refuerzo con recompensas verificables**: si la respuesta a un problema de matemáticas es comprobable, el modelo puede aprender a razonar sin que nadie le escriba los razonamientos. DeepSeek-R1-Zero mostró que de ahí **emergen** comportamientos como revisar y reflexionar (su famoso «momento ajá»). La segunda es **escalar el cómputo en inferencia**: en lugar de solo agrandar el modelo, dejarle pensar más, muestrear varias respuestas o buscar en un árbol de soluciones.
+
+</Section>
+
+<Section kind="intuition">
+
+**Aprender a razonar con RL.** Para cada pregunta se generan varias respuestas (un **grupo**). Un programa comprueba cuáles son correctas y si siguen el formato (razonamiento entre etiquetas `<think>`). Las respuestas mejores que la media del grupo se refuerzan; las peores, se penalizan. Eso es **GRPO**: no necesita un modelo crítico que estime el valor (que en PPO es tan grande como el propio LLM), porque la referencia es la media del grupo.
+
+<Figure title="Escalar en test y ventajas de GRPO" caption="Modo «Escalar en test»: con un verificador, muestrear N respuestas y quedarse con una correcta (pass@N) crece rápido; sin verificador, la votación por mayoría crece más despacio. Modo «Ventajas GRPO»: marca qué respuestas del grupo son correctas y observa las ventajas.">
+  <TestTimeScaling />
+</Figure>
+
+**Cuánto pensar.** Pensar cuesta tokens (y latencia). Qwen3 integra dos modos en un solo modelo: con *thinking* activado razona; desactivado, responde directamente, y se puede fijar un **presupuesto de pensamiento** a partir del cual se le pide que concluya.
+
+**Buscar en lugar de muestrear.** Para tareas como generar código, donde los tests dan una puntuación parcial, se puede organizar la generación como una **búsqueda en árbol** (MCTS): cada nodo es una solución parcial o un intento, y la fórmula **UCT** decide si explotar las ramas prometedoras o explorar las poco visitadas. AB-MCTS decide en cada nodo si «ir más ancho» (generar una respuesta nueva) o «más profundo» (refinar una existente).
+
+<Figure title="Selección UCT" caption="Con c = 0 se elige siempre la mejor media; al subir c pesa más la exploración. Un hijo sin visitar tiene UCT infinito.">
+  <UCTViz />
+</Figure>
+
+</Section>
+
+<Section kind="formal">
+
+Para una pregunta $q$ se muestrean $G$ respuestas $o_1, \dots, o_G$ con la política anterior $\pi_{\theta_{old}}$ y se puntúan con recompensas $r_i$.
+
+<Formula label="Ventaja relativa al grupo" tex="A_i = \frac{r_i - \operatorname{mean}(r_1, \dots, r_G)}{\operatorname{std}(r_1, \dots, r_G)}" reading="la ventaja de la respuesta i es su recompensa menos la media del grupo, dividida entre la desviación típica del grupo">
+  Si todas las respuestas tienen la misma recompensa, no hay señal. Por eso importan preguntas de dificultad adecuada.
+</Formula>
+
+<Formula label="Objetivo de GRPO" tex="\mathcal{J}(\theta) = \mathbb{E}\Big[\frac{1}{G}\sum_{i=1}^{G}\min\big(\rho_i A_i,\ \operatorname{clip}(\rho_i, 1-\varepsilon, 1+\varepsilon)\,A_i\big)\Big] - \beta\, D_{KL}(\pi_\theta \,\|\, \pi_{ref}),\qquad \rho_i = \frac{\pi_\theta(o_i\mid q)}{\pi_{\theta_{old}}(o_i\mid q)}" reading="el objetivo es la media sobre el grupo del mínimo entre la razón de probabilidades por la ventaja y la razón recortada entre uno menos épsilon y uno más épsilon por la ventaja, menos beta por la divergencia KL con el modelo de referencia">
+  El recorte (como en PPO) impide cambios grandes de la política en un paso. La KL frente al modelo de referencia evita que se aleje demasiado de él. En la práctica se calcula token a token.
+</Formula>
+
+<Formula label="Estimador de la KL por token" tex="D_{KL}^{(t)} = \frac{\pi_{ref}(o_t)}{\pi_\theta(o_t)} - \log\frac{\pi_{ref}(o_t)}{\pi_\theta(o_t)} - 1" reading="la KL por token es la razón entre la probabilidad de referencia y la actual, menos su logaritmo, menos uno">
+  Es siempre $\ge 0$ y vale 0 cuando ambas políticas coinciden.
+</Formula>
+
+<Formula label="pass@N" tex="\text{pass@}N = 1 - (1 - p)^N" reading="la probabilidad de que al menos una de N muestras independientes sea correcta es uno menos uno menos p elevado a N">
+  $p$ es la tasa de acierto de una muestra. Exige un **verificador** para elegir la correcta.
+</Formula>
+
+<Formula label="UCT (MCTS)" tex="\operatorname{UCT}(j) = \frac{W_j}{N_j} + c\,\sqrt{\frac{\ln N_{padre}}{N_j}}" reading="la puntuación del hijo j es su valor medio, W sub j entre N sub j, más c por la raíz del logaritmo de las visitas del padre entre las visitas del hijo">
+  El primer término explota; el segundo explora. Cada iteración de MCTS: **selección** (bajar por UCT), **expansión**, **simulación** (evaluar) y **retropropagación**.
+</Formula>
+
+<Formula label="Mixture of Experts" tex="y = \sum_{e \in \operatorname{TopK}(g(x))} \operatorname{softmax}(g(x))_e\, \operatorname{FFN}_e(x)" reading="la salida es la suma, sobre los k expertos con mayor puntuación de la compuerta, de su peso por la salida de su red feed-forward">
+  Sustituye a la FFN del bloque (<StageRef slug="bloque-transformer" />). Qwen3-235B-A22B activa 8 de 128 expertos (22 mil millones de parámetros activos); Kimi K2, 32 mil millones de 1 billón.
+</Formula>
+
+</Section>
+
+<Section kind="example">
+
+<WorkedExample>
+<Problem>
+Grupo de 4 respuestas con recompensas $(1, 0, 0, 1)$. Calcula las ventajas. Después, una respuesta con $A = 1$ tiene razón $\rho = 1.5$ y $\varepsilon = 0.2$: ¿cuánto aporta al objetivo (sin KL)?
+</Problem>
+<Step>
+Media $= 0.5$. Desviación típica $= \sqrt{\tfrac14(0.25 + 0.25 + 0.25 + 0.25)} = 0.5$.
+</Step>
+<Step>
+Ventajas: $(1 - 0.5)/0.5 = 1$ para las correctas y $-1$ para las incorrectas: $A = (1, -1, -1, 1)$.
+</Step>
+<Step>
+Sin recorte: $\rho A = 1.5$. Recortado: $\operatorname{clip}(1.5, 0.8, 1.2)\cdot1 = 1.2$.
+</Step>
+<Step>
+Se toma el mínimo: $1.2$. Aunque la nueva política ya da 1.5 veces más probabilidad a esa buena respuesta, el objetivo no premia seguir subiéndola en este paso: actualizaciones conservadoras y estables.
+</Step>
+</WorkedExample>
+
+</Section>
+
+<Section kind="lab">
+
+<PyCell title="Recompensas verificables: exactitud y formato" code={recompensas} />
+<PyCell title="Ventajas de GRPO dentro del grupo" code={ventajas} />
+<PyCell title="El objetivo de GRPO con recorte y KL" code={objetivo} />
+<PyCell title="Best-of-N frente a votación por mayoría" code={escalar} hint="Prueba p = 0.2 con 3 respuestas erróneas: ¿sigue ayudando la votación?" />
+<PyCell title="Búsqueda en árbol (MCTS) con un verificador" code={mcts} />
+<PyCell title="Mixture of Experts" code={moe} />
+
+</Section>
+
+<Section kind="quiz">
+
+<Quiz questions={quiz} />
+
+</Section>
+
+<Section kind="ml">
+
+**Usar modelos de razonamiento.** En Qwen3, el modo se elige con `enable_thinking=True/False` en la plantilla de chat (o con `/think` y `/no_think` en el mensaje). Para limitar el gasto se fija un presupuesto: si el razonamiento alcanza N tokens, se inserta un texto del estilo «Considerando el tiempo limitado, debo dar la respuesta ya» y se cierra `</think>`. Más pensamiento no siempre es mejor: en preguntas sencillas solo añade latencia y coste (volveremos a esto en <StageRef slug="optimizacion" />).
+
+**Entrenar con GRPO.** Librerías como TRL (`GRPOTrainer`) implementan el bucle: generar grupos, puntuar con funciones de recompensa (exactitud, formato, tests de código) y optimizar. La receta de DeepSeek-R1 es: pequeño SFT de arranque en frío con razonamientos legibles, RL con GRPO, más SFT con muestras filtradas y una ronda final de RL general.
+
+**Código.** Qwen3-Coder y Kimi K2 se entrenan con RL agéntico en miles de entornos simulados (ejecutar código, usar herramientas). En inferencia, marcos como **RethinkMCTS** (búsqueda a nivel de «pensamientos» con retroalimentación de la ejecución) y **S\*** (generar, depurar con tests y elegir entre candidatos con pruebas diferenciadoras) escalan el cómputo en test.
+
+El notebook opcional [`19_razonamiento.ipynb`](https://github.com/joserodriguezc/transfomers_guide/blob/main/notebooks/19_razonamiento.ipynb) usa Qwen3 (0.6B) con y sin modo *thinking* y con presupuesto, y entrena unos pasos con `GRPOTrainer` de TRL sobre problemas aritméticos.
+
+<KeyTakeaways>
+- Los modelos de razonamiento generan una cadena de pensamiento antes de responder.
+- GRPO refuerza las respuestas mejores que la media de su grupo; no necesita crítico; recorta la razón de probabilidades y penaliza la KL.
+- Las recompensas verificables (exactitud, formato, tests) permiten RL sin anotaciones humanas.
+- Escalar en test: más muestras con verificador (pass@N), votación, o búsqueda en árbol con UCT.
+- Mixture of Experts permite modelos enormes con pocos parámetros activos por token.
+</KeyTakeaways>
+
+**Lectura recomendada:** capítulo 8 completo («Embracing the Era of Experience»), en especial «DeepSeek-R1», «Qwen3», «Kimi K2» y «Scaling Reasoning at Test-Time».
+
+</Section>
+
+<Section kind="extensions">
+
+1. Añade a `01_recompensas.py` una penalización por longitud y observa cómo cambia la ventaja de una respuesta correcta pero muy larga.
+2. Implementa en `05_mcts.py` la decisión «más ancho o más profundo» de AB-MCTS con muestreo de Thompson sobre distribuciones Beta.
+3. Calcula, con la fórmula de pass@N, cuántas muestras necesitas para un 95 % de probabilidad de acertar si $p = 0.1$.
+4. Simula el desequilibrio de carga en `06_moe.py` con muchos tokens y añade una pérdida auxiliar de balanceo de carga.
+
+</Section>

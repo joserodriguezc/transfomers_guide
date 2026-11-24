@@ -1,0 +1,127 @@
+import { quiz } from '../quizzes/encoder-decoder'
+import causal from '../snippets/encoder-decoder/01_mascara_causal.py?raw'
+import padding from '../snippets/encoder-decoder/02_padding.py?raw'
+import cross from '../snippets/encoder-decoder/03_cross_attention.py?raw'
+import generar from '../snippets/encoder-decoder/04_generar.py?raw'
+import teacher from '../snippets/encoder-decoder/05_teacher_forcing.py?raw'
+
+<Section kind="why">
+
+El transformer original se diseñó para **traducir**: un **encoder** lee la frase en inglés entera y un **decoder** escribe la traducción palabra a palabra. Desde entonces, la arquitectura se ha dividido en tres familias, y elegir la correcta es una de las primeras decisiones de cualquier proyecto:
+
+- **Encoder-only** (BERT, ViT): comprenden una entrada completa. Clasificación, búsqueda semántica, extracción de entidades.
+- **Decoder-only** (GPT, Llama, Qwen, Mistral, Falcon): generan texto token a token. Todos los LLM conversacionales.
+- **Encoder-decoder** (T5, Whisper): transforman una secuencia en otra de distinta naturaleza o longitud. Traducción, transcripción de audio.
+
+Lo que distingue a las tres no son capas nuevas, sino **qué puede ver cada token**: lo deciden las **máscaras** de atención.
+
+</Section>
+
+<Section kind="intuition">
+
+En la atención (<StageRef slug="atencion" />), cada token puede mirar a todos los demás. Eso es perfecto para **entender** un texto, pero es trampa para **generar**: si al entrenar el modelo para predecir el token 5 le dejamos ver el token 5, aprenderá a copiarlo. La **máscara causal** tapa el futuro: el token $i$ solo ve las posiciones $1, \dots, i$.
+
+<Figure title="Cuatro máscaras" caption="Bidireccional (encoder), causal (decoder), de padding (ignorar el relleno de un lote) y cross-attention (el decoder consulta al encoder). Las celdas tachadas reciben peso 0.">
+  <MaskViz />
+</Figure>
+
+La máscara causal tiene una consecuencia práctica enorme: al **entrenar**, una frase de 1000 tokens produce **1000 ejemplos de predicción a la vez**, todos en paralelo, porque cada posición solo ve su pasado. Al **generar**, en cambio, hay que ir de uno en uno: predecir un token, añadirlo y volver a empezar (decodificación **autorregresiva**).
+
+En el encoder-decoder hay además una **cross-attention**: el decoder pregunta (queries) y el encoder responde (keys y values). Así cada palabra de la traducción puede «consultar» la frase original completa.
+
+</Section>
+
+<Section kind="formal">
+
+Una **máscara aditiva** $M \in \mathbb{R}^{n\times m}$ (matriz de números reales, con $-\infty$ incluido) se suma a las puntuaciones antes de la softmax:
+
+<Formula label="Atención con máscara" tex="\operatorname{Attention}(Q, K, V; M) = \operatorname{softmax}\!\left(\frac{QK^T}{\sqrt{d_k}} + M\right) V" reading="la atención con máscara es la softmax de Q por K transpuesta sobre raíz de d sub k más M, por V">
+  Donde $M_{ij} = -\infty$, $e^{-\infty} = 0$: el peso es exactamente cero. Donde $M_{ij} = 0$, no cambia nada.
+</Formula>
+
+<Formula label="Máscara causal" tex="M_{ij} = \begin{cases} 0 & \text{si } j \le i \\ -\infty & \text{si } j > i \end{cases}" reading="M sub i j vale cero si j es menor o igual que i, y menos infinito si j es mayor que i" />
+
+<Formula label="Cross-attention" tex="\operatorname{CrossAttn}(H_{dec}, H_{enc}) = \operatorname{softmax}\!\left(\frac{(H_{dec}W_Q)(H_{enc}W_K)^T}{\sqrt{d_k}}\right) H_{enc}W_V" reading="la cross-attention usa las queries del decoder y las keys y values del encoder">
+  $H_{dec}$ tiene $n$ filas (tokens de destino) y $H_{enc}$ tiene $m$ (tokens de origen): la matriz de pesos es $n\times m$, no necesariamente cuadrada.
+</Formula>
+
+Un decoder modela la probabilidad de una secuencia como producto de probabilidades condicionadas, y se entrena minimizando la **entropía cruzada** del siguiente token:
+
+<Formula label="Factorización autorregresiva" tex="p(x_1, \dots, x_n) = \prod_{t=1}^{n} p(x_t \mid x_1, \dots, x_{t-1})" reading="la probabilidad de la secuencia es el producto, para t desde 1 hasta n, de la probabilidad de x sub t dados todos los tokens anteriores" />
+
+<Formula label="Pérdida de modelado de lenguaje" tex="\mathcal{L} = -\frac{1}{n}\sum_{t=1}^{n} \log p_\theta(x_t \mid x_{\lt t})" reading="la pérdida es menos la media, para t desde 1 hasta n, del logaritmo de la probabilidad que el modelo de parámetros theta asigna al token correcto x sub t dados los anteriores">
+  Gracias a la máscara causal, las $n$ predicciones salen de **una sola pasada** del modelo (*teacher forcing*: la entrada es la secuencia real desplazada una posición).
+</Formula>
+
+</Section>
+
+<Section kind="example">
+
+<WorkedExample>
+<Problem>
+Puntuaciones (ya escaladas) de 3 tokens: $S = \begin{bmatrix}1&2&3\\1&1&5\\0&2&0\end{bmatrix}$. Aplica la máscara causal y calcula los pesos de atención.
+</Problem>
+<Step>
+Fila 1: solo ve la posición 1 → $(1, -\infty, -\infty)$ → pesos $(1, 0, 0)$. El primer token solo puede atenderse a sí mismo.
+</Step>
+<Step>
+Fila 2: ve las posiciones 1 y 2 → $(1, 1, -\infty)$ → $e^1, e^1, 0$ → pesos $(0.5, 0.5, 0)$. El 5 de la posición 3, que habría dominado, queda oculto.
+</Step>
+<Step>
+Fila 3: ve todo → $\operatorname{softmax}(0, 2, 0) = (1, e^2, 1)/(2 + e^2) \approx (0.107,\ 0.787,\ 0.107)$.
+</Step>
+<Step>
+Matriz de pesos: triangular inferior, cada fila suma 1:
+
+$$
+A = \begin{bmatrix}1&0&0\\0.5&0.5&0\\0.107&0.787&0.107\end{bmatrix}
+$$
+</Step>
+</WorkedExample>
+
+</Section>
+
+<Section kind="lab">
+
+<PyCell title="Máscara causal" code={causal} />
+<PyCell title="Máscara de padding en un lote" code={padding} />
+<PyCell title="Cross-attention entre encoder y decoder" code={cross} />
+<PyCell title="Generar texto token a token" code={generar} hint="Prueba tau = 0.3 y tau = 2 en el muestreo: menos y más diversidad." />
+<PyCell title="Teacher forcing: todas las posiciones a la vez" code={teacher} />
+
+</Section>
+
+<Section kind="quiz">
+
+<Quiz questions={quiz} />
+
+</Section>
+
+<Section kind="ml">
+
+**Cómo elegir familia.** Para clasificar documentos o buscar por similitud, un encoder pequeño (BERT, ModernBERT) suele ser más barato y preciso que un LLM. Para generar texto o seguir instrucciones, decoder-only. Para transcribir audio o traducir con alta fidelidad, encoder-decoder (Whisper es el ejemplo que veremos en <StageRef slug="audio-transformers" />).
+
+**Estrategias de decodificación.** *Greedy* (el más probable) es determinista pero repetitivo; el **muestreo con temperatura**, *top-k* y *top-p* (núcleo) añaden variedad; *beam search* mantiene varias hipótesis y es habitual en traducción. Generar es lento porque es secuencial: el siguiente módulo y <StageRef slug="variantes-atencion" /> explican cómo la **KV cache** evita recalcular el pasado en cada paso.
+
+El notebook opcional [`06_encoder_decoder.ipynb`](https://github.com/joserodriguezc/transfomers_guide/blob/main/notebooks/06_encoder_decoder.ipynb) compara BERT (rellenar huecos), GPT-2 (continuar texto) y un modelo de traducción encoder-decoder.
+
+<KeyTakeaways>
+- Encoder-only, decoder-only y encoder-decoder comparten bloques; difieren en las máscaras y en la cross-attention.
+- La máscara aditiva pone $-\infty$ donde no se puede mirar; la softmax lo convierte en peso 0.
+- La máscara causal permite entrenar todas las posiciones en paralelo y obliga a generar de una en una.
+- En cross-attention, las queries vienen del decoder y las keys y values del encoder.
+- Un decoder se entrena minimizando la entropía cruzada del siguiente token.
+</KeyTakeaways>
+
+**Lectura recomendada:** capítulo 1, secciones «Bidirectional and unidirectional attention» y «Encoder and Decoder Parts».
+
+</Section>
+
+<Section kind="extensions">
+
+1. Implementa *top-p* en `04_generar.py`: muestrea solo entre los tokens más probables cuya probabilidad acumulada llega a $p$.
+2. Implementa *beam search* con anchura 2 sobre la misma tabla de bigramas y compara la probabilidad de la secuencia con la voraz.
+3. Demuestra que con la máscara causal, la salida en la posición $i$ no cambia si se modifican los tokens posteriores a $i$.
+4. Lee cómo T5 formula todas las tareas como «texto a texto» y piensa qué tarea de tu trabajo encajaría mejor en cada familia.
+
+</Section>

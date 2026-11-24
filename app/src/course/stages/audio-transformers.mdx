@@ -1,0 +1,119 @@
+import { quiz } from '../quizzes/audio-transformers'
+import whisper from '../snippets/audio-transformers/01_whisper_formas.py?raw'
+import rvq from '../snippets/audio-transformers/02_rvq.py?raw'
+import tasa from '../snippets/audio-transformers/03_tasa_tokens.py?raw'
+import retraso from '../snippets/audio-transformers/04_patron_retraso.py?raw'
+import wer from '../snippets/audio-transformers/05_wer.py?raw'
+import diarizacion from '../snippets/audio-transformers/06_diarizacion.py?raw'
+
+<Section kind="why">
+
+**Whisper** (2022) cambió la transcripción automática: un único modelo, entrenado con 680 000 horas de audio de internet, transcribe y traduce casi 100 idiomas con una robustez al ruido y a los acentos que antes requería sistemas a medida. Hoy está detrás de subtítulos, actas de reuniones y asistentes de voz.
+
+La siguiente ola son los **modelos fundacionales de audio** (Qwen2-Audio, Kimi-Audio): LLMs que **escuchan** —responden preguntas sobre un audio, analizan emociones, entienden sonidos que no son voz— y que también **hablan**, generando audio directamente. Para generar audio con un transformer hace falta lo mismo que con el texto: un **vocabulario**. Los **códecs neuronales** lo proporcionan convirtiendo el sonido en tokens discretos. Con ellos también se genera música (MusicGen) o se separan fuentes de sonido (SAM Audio).
+
+</Section>
+
+<Section kind="intuition">
+
+**Whisper: un encoder-decoder clásico.** El audio (30 s, remuestreado a 16 kHz) se convierte en un espectrograma log-mel de $3000 \times 80$ (<StageRef slug="audio-senales" />). Dos convoluciones reducen el tiempo a la mitad (1500 posiciones de 20 ms) y un **encoder** transformer lo procesa. Un **decoder** genera el texto token a token con cross-attention al audio (<StageRef slug="encoder-decoder" />). La tarea se elige con **tokens especiales** al inicio: idioma, transcribir o traducir, con o sin marcas de tiempo. Un solo modelo, muchas tareas, como un LLM que sigue instrucciones.
+
+**Tokens de audio: cuantización vectorial residual.** Un códec neuronal (EnCodec, SoundStream, Mimi) tiene un encoder que convierte el audio en una secuencia de vectores (por ejemplo 75 por segundo), un **cuantizador** y un decoder que reconstruye la onda. El cuantizador sustituye cada vector por el más parecido de un **libro de códigos**; como un solo libro no basta, se cuantiza después el **error** con un segundo libro, luego el error del error con un tercero... Cada nivel aporta un token y refina el sonido.
+
+<Figure title="Cuantización vectorial residual" caption="Azul: vectores originales; rojo: reconstrucción. Cada nivel añade un código que corrige el residuo del anterior: más niveles, menos error y más bits.">
+  <RVQViz />
+</Figure>
+
+**Modelos fundacionales de audio.** Qwen2-Audio conecta un encoder tipo Whisper a un LLM: el audio entra como embeddings continuos y el modelo responde en texto según la instrucción. Kimi-Audio va más allá: combina tokens **semánticos** discretos a 12.5 Hz con características continuas de Whisper, y tiene dos cabezas de salida (texto y tokens de audio), de modo que puede responder hablando. Un *detokenizador* (con *flow matching* y un vocoder) convierte esos tokens en onda, en fragmentos para poder hacer *streaming*.
+
+</Section>
+
+<Section kind="formal">
+
+<Formula label="Whisper como modelo condicional" tex="p_\theta(y_{1:n} \mid X) = \prod_{t=1}^{n} p_\theta\big(y_t \mid y_{\lt t},\ \operatorname{Enc}(X)\big)" reading="la probabilidad del texto dado el espectrograma X es el producto de las probabilidades de cada token dado los anteriores y la salida del encoder">
+  $X \in \mathbb{R}^{3000\times80}$ (matriz de números reales) es el log-mel y $y$ incluye los tokens especiales de tarea (`<|es|>`, `<|transcribe|>`…).
+</Formula>
+
+<Formula label="Cuantización vectorial residual" tex="r_0 = z,\qquad c_q = \arg\min_{k} \|r_{q-1} - C_q[k]\|,\qquad r_q = r_{q-1} - C_q[c_q],\qquad \hat z = \sum_{q=1}^{Q} C_q[c_q]" reading="el residuo inicial es el vector z; en cada nivel q se elige el código más cercano al residuo en el libro C sub q, se resta, y la reconstrucción es la suma de los códigos elegidos">
+  Con $Q$ libros de $K$ entradas, cada trama se describe con $Q$ enteros: $Q\log_2 K$ bits.
+</Formula>
+
+<Formula label="Tasa de bits de un códec" tex="\text{bitrate} = f_{tramas}\cdot Q \cdot \log_2 K" reading="la tasa de bits es la frecuencia de tramas por el número de libros por el logaritmo en base dos del tamaño de cada libro">
+  EnCodec a 6 kbps: 75 tramas/s × 8 libros × 10 bits. El audio original a 16 bits y 24 kHz son 384 kbps.
+</Formula>
+
+<Formula label="Tasa de error de palabras" tex="\operatorname{WER} = \frac{S + D + I}{N}" reading="la tasa de error de palabras es la suma de sustituciones, borrados e inserciones dividida entre el número de palabras de la referencia">
+  Se calcula con la distancia de edición entre palabras. Puede superar 1 si hay muchas inserciones. Normaliza mayúsculas y puntuación antes de comparar.
+</Formula>
+
+</Section>
+
+<Section kind="example">
+
+<WorkedExample>
+<Problem>
+Un asistente de voz debe mantener en contexto 10 minutos de conversación. Compara cuántos tokens ocupan con (a) un códec de 75 Hz y 8 libros aplanados, (b) un códec de 12.5 Hz y 8 libros y (c) tokens semánticos de 12.5 Hz.
+</Problem>
+<Step>
+10 minutos = 600 s.
+</Step>
+<Step>
+(a) $600\cdot75\cdot8 = 360\,000$ tokens: más que la ventana de contexto de casi cualquier LLM.
+</Step>
+<Step>
+(b) $600\cdot12.5\cdot8 = 60\,000$ tokens. (c) $600\cdot12.5 = 7500$ tokens.
+</Step>
+<Step>
+Por eso los modelos conversacionales bajan la frecuencia de tramas (12.5 Hz) y separan la información **semántica** (qué se dice, pocos tokens, va al LLM) de la **acústica** (cómo suena, la reconstruye el detokenizador). El texto de esos 10 minutos ocuparía unos 1500 tokens.
+</Step>
+</WorkedExample>
+
+</Section>
+
+<Section kind="lab">
+
+<PyCell title="El recorrido de Whisper en formas y tokens" code={whisper} />
+<PyCell title="Cuantización vectorial residual con k-means" code={rvq} />
+<PyCell title="Tokens por hora de audio" code={tasa} />
+<PyCell title="El patrón de retraso de MusicGen" code={retraso} />
+<PyCell title="Tasa de error de palabras (WER)" code={wer} />
+<PyCell title="Diarización: quién habla cuándo" code={diarizacion} />
+
+</Section>
+
+<Section kind="quiz">
+
+<Quiz questions={quiz} />
+
+</Section>
+
+<Section kind="ml">
+
+**Transcribir una reunión en producción** (el ejemplo del libro con Kimi-Audio) es un pequeño sistema: (1) **diarización** con `pyannote.audio` para saber quién habla en cada tramo; (2) recortar el audio por hablante; (3) transcribir cada fragmento con instrucciones explícitas; (4) unir con marcas de tiempo y nombres. Con un modelo fundacional se puede además preguntar «¿qué decisiones se tomaron?» directamente sobre el audio.
+
+**Elegir modelo.** Para solo transcribir, Whisper (o sus variantes destiladas, más rápidas) sigue siendo la opción más simple y barata. Para entender audio en general (sonidos, emociones, preguntas abiertas), Qwen2-Audio. Para conversación de voz a voz, modelos como Kimi-Audio. Mide el **WER** en tu propio audio (acentos, vocabulario técnico, ruido) antes de decidir.
+
+**Más allá de la voz.** MusicGen genera música desde texto con tokens de EnCodec y el patrón de retraso; SAM Audio aplica la idea de prompts de SAM (<StageRef slug="segmentacion-sam" />) a separar fuentes («aísla la guitarra») con un transformer de difusión.
+
+El notebook opcional [`16_audio_transformers.ipynb`](https://github.com/joserodriguezc/transfomers_guide/blob/main/notebooks/16_audio_transformers.ipynb) transcribe y traduce con `whisper-small` en `transformers`, calcula el WER con `jiwer` y codifica y decodifica audio con EnCodec variando el número de libros.
+
+<KeyTakeaways>
+- Whisper: log-mel → encoder → decoder con cross-attention; los tokens especiales eligen idioma y tarea.
+- Los códecs neuronales convierten audio en tokens con cuantización vectorial residual: cada nivel corrige el error del anterior.
+- La tasa de tokens de audio es enorme; los modelos conversacionales usan tramas lentas (12.5 Hz) y tokens semánticos.
+- Los modelos fundacionales de audio conectan un encoder de audio a un LLM; algunos generan además audio.
+- El WER mide la calidad de la transcripción; la diarización añade quién habla.
+</KeyTakeaways>
+
+**Lectura recomendada:** capítulo 6, secciones «The Rise of Speech Transformers: The Impact of Whisper», «Audio Foundation Models», «Qwen2-Audio», «Transcribing a Meeting with Kimi-Audio», «Segment Anything in Audio» y «Beyond Text and Speech».
+
+</Section>
+
+<Section kind="extensions">
+
+1. Amplía `02_rvq.py` para medir el error con 1, 2, 4 y 8 niveles y con libros de 16, 64 y 256 entradas. ¿Qué es más eficiente en bits?
+2. Implementa el WER a nivel de carácter (CER), útil para idiomas sin espacios entre palabras.
+3. En `06_diarizacion.py`, añade un tercer hablante y elige el número de hablantes con el coeficiente de silueta.
+4. Diseña los tokens especiales de un modelo tipo Whisper que, además, detecte si hay música de fondo.
+
+</Section>

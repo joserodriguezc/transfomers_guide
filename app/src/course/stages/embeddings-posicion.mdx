@@ -1,0 +1,120 @@
+import { quiz } from '../quizzes/embeddings-posicion'
+import busqueda from '../snippets/embeddings-posicion/01_busqueda.py?raw'
+import similitud from '../snippets/embeddings-posicion/02_similitud.py?raw'
+import sinusoidal from '../snippets/embeddings-posicion/03_sinusoidal.py?raw'
+import desplazamiento from '../snippets/embeddings-posicion/04_desplazamiento.py?raw'
+import sinOrden from '../snippets/embeddings-posicion/05_sin_orden.py?raw'
+
+<Section kind="why">
+
+Los IDs que produce el tokenizador (<StageRef slug="tokenizacion" />) son etiquetas arbitrarias: que `gato` sea el 4321 y `perro` el 4322 no dice nada de su parecido. El modelo necesita **vectores** donde la geometría tenga significado: palabras relacionadas cerca, palabras distintas lejos. Esa tabla de vectores, la **matriz de embeddings**, es la primera capa entrenable de cualquier transformer, y en modelos con vocabularios grandes puede ser una fracción notable de sus parámetros.
+
+Hay un segundo problema, más sutil: la atención (<StageRef slug="atencion" />) trata la secuencia como un **conjunto**. Sin más información, «el perro muerde al hombre» y «el hombre muerde al perro» serían indistinguibles. Por eso cada transformer añade una **codificación posicional**. Cómo se hace esa codificación decide, años después, hasta qué longitud de contexto puede llegar un modelo (<StageRef slug="contexto-largo" />).
+
+</Section>
+
+<Section kind="intuition">
+
+**Embeddings.** Imagina cada palabra como un punto en un espacio de muchas dimensiones. El entrenamiento mueve los puntos para que las palabras que aparecen en contextos parecidos acaben cerca. La medida natural de «cerca» es el **coseno** del ángulo entre vectores: 1 si apuntan igual, 0 si son perpendiculares, −1 si son opuestos.
+
+<Figure title="Similitud coseno en un espacio de embeddings 2D" caption="Arrastra la consulta: la palabra más similar se marca en verde. Lo que importa es la dirección, no la longitud del vector.">
+  <EmbeddingSpace />
+</Figure>
+
+**Posiciones.** El transformer original suma a cada embedding un vector que depende solo de la posición, construido con senos y cosenos de frecuencias distintas. Las primeras dimensiones oscilan rápido (distinguen posiciones vecinas) y las últimas muy despacio (distinguen el principio del final), como las agujas de un reloj: segundero, minutero, horario.
+
+<Figure title="Codificación posicional sinusoidal" caption="Arriba, el vector de cada posición (columna). Abajo, el coseno entre la posición elegida y todas las demás: decae suavemente con la distancia.">
+  <PositionalEncodingViz />
+</Figure>
+
+</Section>
+
+<Section kind="formal">
+
+Sea $V$ el vocabulario con $N_v$ tokens y $d$ la dimensión del modelo. La **matriz de embeddings** guarda un vector por token:
+
+<Formula label="Embedding de un token" tex="E \in \mathbb{R}^{N_v \times d},\qquad x_i = E[v_i] = e_{v_i}^T E" reading="E es una matriz de N sub v filas y d columnas de números reales; el embedding x sub i del i-ésimo token es la fila v sub i de E, que equivale a multiplicar el vector one-hot de v sub i por E">
+  $e_{v}$ es el vector *one-hot* con un 1 en la posición $v$. En la práctica nunca se multiplica: se indexa la fila (`E[ids]`), pero la equivalencia explica por qué $E$ se entrena con gradientes como cualquier capa lineal.
+</Formula>
+
+<Formula label="Similitud coseno" tex="\cos(a, b) = \frac{a \cdot b}{\|a\|\,\|b\|}" reading="el coseno entre a y b es su producto punto dividido entre el producto de sus normas" />
+
+La **codificación sinusoidal** asigna a la posición $p$ un vector $PE_p \in \mathbb{R}^d$ (vector de $d$ números reales):
+
+<Formula label="Codificación posicional sinusoidal" tex="PE_{p,\,2i} = \sin\!\left(\frac{p}{10000^{2i/d}}\right),\qquad PE_{p,\,2i+1} = \cos\!\left(\frac{p}{10000^{2i/d}}\right)" reading="la componente 2i de la codificación de la posición p es el seno de p dividido entre diez mil elevado a 2i sobre d; la componente 2i más 1 es el coseno del mismo ángulo">
+  $i = 0, 1, \dots, d/2 - 1$ indexa los pares de dimensiones. La frecuencia $\omega_i = 10000^{-2i/d}$ va de 1 (rápida) a casi $10^{-4}$ (lentísima).
+</Formula>
+
+<Formula label="Entrada del primer bloque" tex="h^{(0)}_p = x_p + PE_p" reading="la representación inicial del token en la posición p es su embedding más la codificación de su posición" />
+
+<Formula label="Desplazar es girar" tex="PE_{p+k} = R_k\, PE_p" reading="la codificación de la posición p más k es igual a una matriz R sub k por la codificación de la posición p">
+  $R_k$ es diagonal por bloques de $2\times2$ y cada bloque es una rotación de ángulo $k\,\omega_i$. No depende de $p$: la relación entre dos posiciones solo depende de su **distancia** $k$. Esta idea, llevada a las queries y keys, es RoPE (<StageRef slug="contexto-largo" />).
+</Formula>
+
+</Section>
+
+<Section kind="example">
+
+<WorkedExample>
+<Problem>
+Con $d = 4$, calcula $PE_1$ (la posición 1) y comprueba que su norma es $\sqrt{2}$.
+</Problem>
+<Step>
+Frecuencias: $\omega_0 = 10000^{0} = 1$ y $\omega_1 = 10000^{-2/4} = 10000^{-1/2} = 0.01$.
+</Step>
+<Step>
+$PE_1 = (\sin 1,\ \cos 1,\ \sin 0.01,\ \cos 0.01) \approx (0.841,\ 0.540,\ 0.010,\ 1.000)$.
+</Step>
+<Step>
+Cada par cumple $\sin^2 + \cos^2 = 1$, así que $\|PE_1\|^2 = 1 + 1 = 2$ y $\|PE_1\| = \sqrt2 \approx 1.414$. En general $\|PE_p\| = \sqrt{d/2}$ para toda posición: la codificación nunca «crece» con $p$.
+</Step>
+<Step>
+Comparando con $PE_0 = (0, 1, 0, 1)$: $PE_0 \cdot PE_1 = \cos 1 + \cos 0.01 \approx 0.540 + 1.000 = 1.540$, y el coseno es $1.540 / 2 = 0.770$. Las posiciones vecinas se parecen, pero no son iguales.
+</Step>
+</WorkedExample>
+
+</Section>
+
+<Section kind="lab">
+
+<PyCell title="La búsqueda de embeddings es un producto por one-hot" code={busqueda} />
+<PyCell title="Similitud coseno y analogías" code={similitud} />
+<PyCell title="Codificación posicional sinusoidal" code={sinusoidal} />
+<PyCell title="Desplazar k posiciones es una rotación" code={desplazamiento} hint="Prueba otros valores de k y de pos: la misma matriz R_k sirve para todas las posiciones." />
+<PyCell title="Sin posiciones, el orden no existe" code={sinOrden} hint="La primera comprobación da True (la atención es equivariante a permutaciones); con posiciones, False." />
+
+</Section>
+
+<Section kind="quiz">
+
+<Quiz questions={quiz} />
+
+</Section>
+
+<Section kind="ml">
+
+**Embeddings aprendidos frente a fijos.** BERT y GPT-2 aprenden un vector por posición (una segunda tabla $P \in \mathbb{R}^{L \times d}$, matriz de números reales), lo que funciona bien pero no generaliza más allá de la longitud máxima $L$ vista en el entrenamiento. Los modelos actuales (Llama, Qwen, Mistral) no suman nada a la entrada: aplican **RoPE** dentro de la atención, que veremos en <StageRef slug="contexto-largo" />.
+
+**Embeddings como producto.** Los vectores de un modelo preentrenado sirven para búsqueda semántica: se calcula el embedding de cada documento y se buscan los de mayor coseno con la consulta. Es la base de los sistemas RAG. Muchos modelos «comparten» la matriz de embeddings con la capa de salida (*weight tying*), ahorrando $N_v \cdot d$ parámetros.
+
+El notebook opcional [`02_embeddings_posicion.ipynb`](https://github.com/joserodriguezc/transfomers_guide/blob/main/notebooks/02_embeddings_posicion.ipynb) extrae los embeddings de BERT para una frase y visualiza las posiciones aprendidas de GPT-2.
+
+<KeyTakeaways>
+- La matriz de embeddings $E$ tiene una fila por token; buscar un embedding equivale a multiplicar un one-hot por $E$.
+- La similitud coseno mide el parecido por dirección; es la métrica estándar entre embeddings.
+- La atención sin posiciones es ciega al orden: permutar los tokens solo permuta la salida.
+- La codificación sinusoidal usa frecuencias geométricas; desplazar $k$ posiciones es una rotación que solo depende de $k$.
+</KeyTakeaways>
+
+**Lectura recomendada:** capítulo 1, sección «Token and Positional Embeddings».
+
+</Section>
+
+<Section kind="extensions">
+
+1. Cuenta los parámetros de la matriz de embeddings de un modelo con $N_v = 151\,936$ y $d = 4096$. ¿Qué fracción supone en un modelo de 8 mil millones de parámetros?
+2. Sustituye la codificación sinusoidal por posiciones aprendidas en el ejemplo `05_sin_orden.py` (una matriz aleatoria) y comprueba que también rompe la equivariancia.
+3. Cambia la base 10 000 por 100 o por 1 000 000 en `03_sinusoidal.py`. ¿Qué pasa con las dimensiones de baja frecuencia?
+4. Busca por qué algunos modelos multiplican los embeddings por $\sqrt{d}$ antes de sumar la posición.
+
+</Section>

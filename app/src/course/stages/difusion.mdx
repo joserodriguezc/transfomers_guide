@@ -1,0 +1,125 @@
+import { quiz } from '../quizzes/difusion'
+import directo from '../snippets/difusion/01_proceso_directo.py?raw'
+import denoiser from '../snippets/difusion/02_denoiser_optimo.py?raw'
+import ddpm from '../snippets/difusion/03_muestreo_ddpm.py?raw'
+import cfg from '../snippets/difusion/04_cfg.py?raw'
+import ddim from '../snippets/difusion/05_ddim.py?raw'
+
+<Section kind="why">
+
+Stable Diffusion, Midjourney, DALL·E 3, Flux, Sora o Veo: casi todos los generadores de imagen y vídeo actuales son **modelos de difusión**. Generan con una calidad y una diversidad que las GAN no lograban y, a diferencia de ellas, se entrenan de forma estable con una pérdida sencilla. También se usan para generar audio, moléculas, estructuras de proteínas o trayectorias de robots.
+
+La idea parece al revés: para aprender a **crear** imágenes, el modelo aprende a **quitar ruido**. Este módulo construye esa idea desde cero: el proceso que añade ruido, la red que lo predice, el muestreo que lo invierte y la **guía sin clasificador** (*classifier-free guidance*), el mando que controla cuánto obedece la imagen al prompt. El siguiente módulo (<StageRef slug="dit-video" />) sustituirá la red por un transformer.
+
+</Section>
+
+<Section kind="intuition">
+
+**Destruir es fácil.** Toma una imagen y súmale un poco de ruido gaussiano; repite mil veces. Al final queda ruido puro, indistinguible de cualquier otro. Este **proceso hacia delante** no se aprende: es una receta fija. Además, no hace falta recorrer los mil pasos: el resultado del paso $t$ es simplemente una mezcla de la imagen original y ruido con unos pesos conocidos.
+
+<Figure title="El proceso hacia delante sobre una espiral" caption="Mueve t: la espiral (los «datos») se convierte en una nube gaussiana. Compara el programa lineal con el coseno: el coseno destruye la señal más despacio al principio.">
+  <DiffusionForward />
+</Figure>
+
+**Reconstruir se aprende.** Se entrena una red que, viendo una imagen ruidosa $x_t$ y el paso $t$, **adivina el ruido** $\varepsilon$ que se le añadió. Para generar se empieza por ruido puro y se resta, paso a paso, una parte del ruido predicho (más un poco de ruido nuevo para no colapsar). Lo que emerge es una muestra nueva de la distribución de los datos.
+
+**Condicionar y guiar.** Para generar «un gato», la red recibe también la condición (el texto). Durante el entrenamiento se le quita la condición de vez en cuando, así aprende a predecir el ruido con y sin ella. Al generar, se **exagera la diferencia** entre ambas predicciones con un factor $w$: más fidelidad al prompt, menos diversidad.
+
+<Figure title="Guía sin clasificador en 1D" caption="Con w = 0 se ignora la condición (dos modos). Con w = 1 se muestrea p(x | c). Con w alto la distribución se estrecha: imágenes más «típicas» del prompt, menos variadas.">
+  <CFGViz />
+</Figure>
+
+</Section>
+
+<Section kind="formal">
+
+Con un **programa de ruido** $\beta_1, \dots, \beta_T$ (pequeños, crecientes) se define $\alpha_t = 1 - \beta_t$ y su producto acumulado:
+
+<Formula label="Producto acumulado" tex="\bar\alpha_t = \prod_{s=1}^{t} \alpha_s = \prod_{s=1}^{t} (1 - \beta_s)" reading="alfa barra sub t es el producto, para s desde 1 hasta t, de alfa sub s, es decir, de uno menos beta sub s">
+  $\bar\alpha_t$ es la fracción de «energía» de la señal que queda en el paso $t$: empieza en $\approx 1$ y termina en $\approx 0$.
+</Formula>
+
+<Formula label="Proceso hacia delante (forma cerrada)" tex="x_t = \sqrt{\bar\alpha_t}\, x_0 + \sqrt{1 - \bar\alpha_t}\,\varepsilon,\qquad \varepsilon \sim \mathcal{N}(0, I)" reading="x sub t es la raíz de alfa barra sub t por x sub 0 más la raíz de uno menos alfa barra sub t por un ruido épsilon gaussiano estándar">
+  Equivale a aplicar $t$ veces $x_t = \sqrt{\alpha_t}\,x_{t-1} + \sqrt{\beta_t}\,\varepsilon_t$. Permite entrenar con un $t$ aleatorio en cada ejemplo, sin simular la cadena.
+</Formula>
+
+<Formula label="Pérdida de entrenamiento (DDPM)" tex="\mathcal{L}(\theta) = \mathbb{E}_{x_0,\, t,\, \varepsilon}\Big[\big\|\varepsilon - \varepsilon_\theta\big(\sqrt{\bar\alpha_t}\,x_0 + \sqrt{1-\bar\alpha_t}\,\varepsilon,\ t\big)\big\|^2\Big]" reading="la pérdida es la esperanza, sobre imágenes, pasos y ruidos, del error cuadrático entre el ruido real y el que predice la red a partir de la imagen ruidosa y el paso">
+  Una simple regresión: la red $\varepsilon_\theta$ predice el ruido. Esto equivale a aprender la dirección hacia los datos (la *score* $\nabla_x \log p(x_t)$, salvo un factor).
+</Formula>
+
+<Formula label="Paso de muestreo (DDPM)" tex="x_{t-1} = \frac{1}{\sqrt{\alpha_t}}\left(x_t - \frac{\beta_t}{\sqrt{1-\bar\alpha_t}}\,\varepsilon_\theta(x_t, t)\right) + \sqrt{\beta_t}\, z,\qquad z \sim \mathcal{N}(0, I)" reading="x sub t menos 1 es uno entre la raíz de alfa sub t por x sub t menos beta sub t entre raíz de uno menos alfa barra por el ruido predicho, más raíz de beta sub t por un ruido nuevo z">
+  En el último paso ($t = 1$) no se añade $z$. DDIM usa una versión determinista que permite saltar pasos: 20–50 en lugar de 1000.
+</Formula>
+
+<Formula label="Guía sin clasificador" tex="\tilde\varepsilon_\theta(x_t, c) = \varepsilon_\theta(x_t, \varnothing) + w\,\big(\varepsilon_\theta(x_t, c) - \varepsilon_\theta(x_t, \varnothing)\big)" reading="el ruido guiado es el ruido predicho sin condición más w veces la diferencia entre el predicho con la condición c y el predicho sin condición">
+  $\varnothing$ es la condición vacía. $w = 1$ es el modelo condicional sin más; $w \gt 1$ (típicamente 3–8) refuerza el prompt. Corresponde a muestrear de $p(x)\,p(c \mid x)^w$. Cuesta dos evaluaciones de la red por paso.
+</Formula>
+
+</Section>
+
+<Section kind="example">
+
+<WorkedExample>
+<Problem>
+Con $\bar\alpha_t = 0.36$, $x_0 = 5$ y un ruido muestreado $\varepsilon = -1$, calcula $x_t$. Después, suponiendo que la red predice exactamente $\varepsilon$, recupera $x_0$.
+</Problem>
+<Step>
+$\sqrt{\bar\alpha_t} = 0.6$ y $\sqrt{1 - \bar\alpha_t} = \sqrt{0.64} = 0.8$.
+</Step>
+<Step>
+$x_t = 0.6\cdot5 + 0.8\cdot(-1) = 3 - 0.8 = 2.2$.
+</Step>
+<Step>
+Despejando de la forma cerrada: $\hat x_0 = \dfrac{x_t - \sqrt{1-\bar\alpha_t}\,\hat\varepsilon}{\sqrt{\bar\alpha_t}} = \dfrac{2.2 - 0.8\cdot(-1)}{0.6} = \dfrac{3}{0.6} = 5$ ✓.
+</Step>
+<Step>
+Con una predicción imperfecta, $\hat\varepsilon = -0.5$: $\hat x_0 = (2.2 + 0.4)/0.6 \approx 4.33$. Por eso no se salta directamente a $\hat x_0$ desde ruido puro: se avanza en pequeños pasos, corrigiendo la estimación cada vez.
+</Step>
+</WorkedExample>
+
+</Section>
+
+<Section kind="lab">
+
+<PyCell title="El proceso hacia delante y la pérdida" code={directo} />
+<PyCell title="El predictor de ruido óptimo para una mezcla de gaussianas" code={denoiser} hint="En lugar de entrenar una red, usamos el predictor perfecto que se puede calcular a mano para estos datos." />
+<PyCell title="Generar con el muestreo DDPM" code={ddpm} />
+<PyCell title="Guía sin clasificador" code={cfg} hint="Prueba w = 0.5 y w = 7. ¿Qué ocurre con la dispersión?" />
+<PyCell title="DDIM: generar en pocos pasos" code={ddim} />
+
+</Section>
+
+<Section kind="quiz">
+
+<Quiz questions={quiz} />
+
+</Section>
+
+<Section kind="ml">
+
+**Con `diffusers`** todo esto está empaquetado: un *pipeline* combina el codificador de texto, la red de eliminación de ruido, el planificador (*scheduler*: DDPM, DDIM, DPM-Solver, Euler…) y el decodificador. `guidance_scale` es la $w$ de la guía y `num_inference_steps` el número de pasos.
+
+**Decisiones de producción.** El número de pasos marca la latencia (cada paso es una pasada completa de la red, dos con CFG). Planificadores modernos y modelos destilados generan en 1–8 pasos. La escala de guía es un compromiso: con valores muy altos aparecen colores saturados y artefactos. Y casi nadie difunde en píxeles: se trabaja en el **espacio latente** de un autoencoder, como veremos en <StageRef slug="dit-video" />.
+
+El notebook opcional [`13_difusion.ipynb`](https://github.com/joserodriguezc/transfomers_guide/blob/main/notebooks/13_difusion.ipynb) entrena un pequeño modelo de difusión sobre datos 2D en PyTorch y genera imágenes con un *pipeline* de `diffusers` variando `guidance_scale` y el número de pasos.
+
+<KeyTakeaways>
+- El proceso hacia delante añade ruido gaussiano; $x_t = \sqrt{\bar\alpha_t}x_0 + \sqrt{1-\bar\alpha_t}\varepsilon$ permite saltar a cualquier paso.
+- La red aprende a predecir el ruido con una pérdida de error cuadrático.
+- Generar es invertir el proceso: de ruido puro a datos, restando ruido predicho paso a paso.
+- La guía sin clasificador combina las predicciones con y sin condición; $w$ controla fidelidad frente a diversidad.
+- DDIM y otros planificadores reducen los pasos de 1000 a unas decenas.
+</KeyTakeaways>
+
+**Lectura recomendada:** capítulo 4, secciones «Introduction to Generative Image Models», «Diffusion Models: What's That Noise About?» y «Classifier-Free Guidance in Diffusion Models».
+
+</Section>
+
+<Section kind="extensions">
+
+1. Sustituye el programa lineal por el coseno en `03_muestreo_ddpm.py` y compara la calidad con el mismo número de pasos.
+2. Entrena una red pequeña (por ejemplo, con `sklearn.neural_network.MLPRegressor`) para predecir $\varepsilon$ a partir de $(x_t, t)$ sobre los datos de la mezcla, y úsala en lugar del predictor óptimo.
+3. Demuestra que si $x_{t-1} \sim \mathcal{N}(\sqrt{\bar\alpha_{t-1}}x_0, (1 - \bar\alpha_{t-1})I)$, entonces $x_t$ sigue la forma cerrada (usa que la suma de gaussianas independientes es gaussiana).
+4. Implementa la parametrización «v-prediction» ($v = \sqrt{\bar\alpha_t}\varepsilon - \sqrt{1-\bar\alpha_t}x_0$) y comprueba que de $v$ se recuperan $x_0$ y $\varepsilon$.
+
+</Section>

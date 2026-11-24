@@ -1,0 +1,124 @@
+import { quiz } from '../quizzes/agentes'
+import react from '../snippets/agentes/01_bucle_react.py?raw'
+import herramientas from '../snippets/agentes/02_llamadas_herramientas.py?raw'
+import supervisor from '../snippets/agentes/03_supervisor.py?raw'
+import contexto from '../snippets/agentes/04_contexto.py?raw'
+import memoria from '../snippets/agentes/05_memoria.py?raw'
+import humano from '../snippets/agentes/06_humano_en_el_bucle.py?raw'
+
+<Section kind="why">
+
+Un LLM responde preguntas; un **agente** cumple tareas. La diferencia es el **bucle**: el agente decide qué hacer, usa **herramientas** (buscar, ejecutar código, consultar una base de datos, enviar un correo), observa el resultado y vuelve a decidir, hasta terminar. Así funcionan los asistentes de programación que resuelven *issues* de GitHub, los agentes de investigación que leen decenas de fuentes o los asistentes que reservan un viaje.
+
+Un flujo de trabajo tradicional es como una obra de teatro ensayada: la secuencia está fija. Un agente es un improvisador: elige la siguiente escena según lo que pasa. Esa flexibilidad es potente y peligrosa: los agentes fallan de formas nuevas (bucles infinitos, herramientas mal usadas, contexto desbordado, acciones irreversibles). Este módulo recorre las decisiones de diseño que separan una demo de un agente fiable: **flujos y arquitecturas**, **ingeniería de contexto**, **memoria** y **humano en el bucle**.
+
+</Section>
+
+<Section kind="intuition">
+
+**El bucle ReAct.** El modelo alterna **razonar** («necesito el precio de salida») y **actuar** (llamar a una herramienta con argumentos en JSON). El resultado vuelve como **observación** y se añade al contexto. El bucle termina cuando el modelo da una respuesta final... o cuando se alcanza un límite de pasos que siempre debe existir.
+
+<Figure title="Traza de un agente ReAct" caption="Avanza paso a paso y observa cómo crece el contexto: cada pensamiento, llamada y observación se acumula, junto a las descripciones de las herramientas del mensaje de sistema.">
+  <AgentTrace />
+</Figure>
+
+**Cuánta autonomía.** Hay un continuo: desde flujos **orquestados** (los puntos de decisión están fijados en un grafo y el LLM solo elige ramas) hasta agentes **autónomos** que planifican y ejecutan sin estructura fija. En producción, casi todo lo que funciona está más cerca del primer extremo. Patrones habituales: **encadenar** pasos, **enrutar** según el tipo de petición, **paralelizar** subtareas, **orquestador–trabajadores** y **evaluador–optimizador** (un modelo genera y otro critica).
+
+**Varios agentes.** Con un **supervisor**, un enrutador decide qué agente especializado (investigador, redactor, revisor) actúa a continuación; en una arquitectura **jerárquica**, hay supervisores de supervisores. Cada agente tiene sus propias instrucciones, herramientas y memoria, lo que **aísla** su contexto.
+
+**Ingeniería de contexto.** El rendimiento de un agente depende menos del modelo que de **qué hay en su ventana de contexto** en cada decisión: instrucciones, petición del usuario, historial, memoria a largo plazo, información recuperada (RAG), herramientas disponibles y formato de salida. Más no es mejor: hay que **seleccionar** lo relevante, **comprimir** (resumir, recortar) y **aislar** (repartir entre agentes). Recuerda el problema del pajar (<StageRef slug="contexto-largo" />).
+
+**Memoria.** Como en la cognición humana: **episódica** (experiencias concretas: «el despliegue falló por memoria»), **semántica** (hechos: «la GPU es una A100») y **procedimental** (cómo hacer las cosas: recetas, flujos de herramientas).
+
+**Humano en el bucle.** Las acciones de riesgo (enviar, pagar, borrar, desplegar) se **pausan** hasta que una persona aprueba, edita o rechaza.
+
+</Section>
+
+<Section kind="formal">
+
+<Formula label="El bucle de un agente" tex="a_t = \pi_\theta(c_t),\qquad o_t = \operatorname{env}(a_t),\qquad c_{t+1} = \operatorname{gestionar}(c_t \oplus a_t \oplus o_t)" reading="la acción en t es la decisión del modelo dado el contexto; la observación es el resultado de ejecutarla; el contexto siguiente es el anterior con la acción y la observación añadidas, tras gestionarlo">
+  $\oplus$ es concatenar. «Gestionar» incluye seleccionar, resumir o recortar para no superar la ventana. El bucle para con una respuesta final o al llegar a $t_{max}$.
+</Formula>
+
+<Formula label="Coste del contexto acumulado" tex="\text{tokens procesados} \approx \sum_{t=1}^{T}\Big(c_0 + \sum_{s \lt t} |a_s| + |o_s|\Big)" reading="los tokens procesados son aproximadamente la suma, para cada paso t, del contexto inicial más todas las acciones y observaciones anteriores">
+  Sin caché de prefijos, el coste crece de forma **cuadrática** con el número de pasos: cada llamada vuelve a leer todo lo anterior. Por eso importa compactar.
+</Formula>
+
+<Formula label="Recuperación de memoria con recencia" tex="\operatorname{score}(m) = \operatorname{sim}(q, m) \cdot 0.5^{\,\Delta t_m / h}" reading="la puntuación de una memoria es su similitud con la consulta multiplicada por un medio elevado al tiempo transcurrido dividido entre la vida media h">
+  Combina relevancia (por ejemplo, coseno entre embeddings) y recencia; muchos sistemas añaden también un término de importancia.
+</Formula>
+
+</Section>
+
+<Section kind="example">
+
+<WorkedExample>
+<Problem>
+Un agente tiene un mensaje de sistema con herramientas de 2000 tokens. Cada paso añade unos 300 tokens (pensamiento, llamada y observación). ¿Cuántos tokens de entrada procesa en total una tarea de 10 pasos sin caché? ¿Y si el mensaje de sistema se cachea?
+</Problem>
+<Step>
+En el paso $t$ (de 1 a 10), la entrada es $2000 + 300\,(t - 1)$ tokens.
+</Step>
+<Step>
+Suma: $10\cdot2000 + 300\,(0 + 1 + \dots + 9) = 20\,000 + 300\cdot45 = 33\,500$ tokens.
+</Step>
+<Step>
+Con el prefijo cacheado (el sistema y los pasos anteriores, que no cambian), solo se procesan de nuevo los ~300 tokens nuevos por paso: unos $2000 + 9\cdot300 = 4700$ tokens «frescos».
+</Step>
+<Step>
+Si además el agente expone 40 herramientas en lugar de las 5 necesarias, el mensaje de sistema podría pasar a 10 000 tokens y confundir al modelo al elegir. Seleccionar herramientas es ingeniería de contexto.
+</Step>
+</WorkedExample>
+
+</Section>
+
+<Section kind="lab">
+
+<PyCell title="El bucle ReAct con herramientas" code={react} />
+<PyCell title="Llamadas a herramientas: esquema y validación" code={herramientas} hint="Un error claro devuelto como observación permite al modelo corregir la llamada." />
+<PyCell title="Arquitectura con supervisor" code={supervisor} />
+<PyCell title="Ingeniería de contexto: seleccionar y acotar" code={contexto} />
+<PyCell title="Memoria episódica, semántica y procedimental" code={memoria} />
+<PyCell title="Humano en el bucle" code={humano} />
+
+</Section>
+
+<Section kind="quiz">
+
+<Quiz questions={quiz} />
+
+</Section>
+
+<Section kind="ml">
+
+**Frameworks.** LangGraph modela agentes como **grafos de estado** (nodos = agentes o herramientas, aristas condicionales = enrutamiento) con persistencia, subgrafos e interrupciones para humano en el bucle. El **Model Context Protocol (MCP)** estandariza cómo un agente se conecta a herramientas y datos externos. Para programación, **SWE-agent** y entornos similares dan al modelo una interfaz de comandos pensada para agentes (abrir, buscar, editar, ejecutar tests) y resuelven *issues* reales de GitHub.
+
+**Lista de comprobación de producción:**
+
+- Límite de pasos y de coste por tarea; detección de bucles entre agentes.
+- Herramientas con esquemas estrictos, errores explicativos y permisos mínimos.
+- Aprobación humana para acciones irreversibles; registro (*trace*) de cada decisión.
+- Evaluación con tareas reales, no solo con ejemplos felices.
+
+El notebook opcional [`20_agentes.ipynb`](https://github.com/joserodriguezc/transfomers_guide/blob/main/notebooks/20_agentes.ipynb) implementa un agente ReAct con un modelo abierto pequeño y llamadas a herramientas, y una versión con supervisor en LangGraph.
+
+<KeyTakeaways>
+- Un agente es un bucle: decidir, actuar con herramientas, observar; siempre con un límite de pasos.
+- En producción domina la autonomía orquestada (grafos con puntos de decisión) sobre la autonomía libre.
+- Los sistemas multiagente usan supervisores (y jerarquías) y aíslan el contexto de cada agente.
+- Ingeniería de contexto: seleccionar, comprimir y aislar la información que ve el modelo.
+- Memoria episódica, semántica y procedimental; humano en el bucle para acciones de riesgo.
+</KeyTakeaways>
+
+**Lectura recomendada:** capítulo 9 completo («From Scripts to Thinking: AI Agents for Complex Tasks»).
+
+</Section>
+
+<Section kind="extensions">
+
+1. Sustituye `llm_simulado` de `01_bucle_react.py` por una llamada real a un modelo (local o por API) con las mismas herramientas.
+2. Añade al supervisor de `03_supervisor.py` un agente que a veces falla y una política de reintento con un máximo de dos intentos.
+3. Implementa la compactación del historial: cuando el contexto supere un umbral, sustituye los pasos antiguos por un resumen.
+4. Diseña la matriz de riesgo de las herramientas de un agente de tu trabajo: ¿cuáles requieren aprobación humana y por qué?
+
+</Section>

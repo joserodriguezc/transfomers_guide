@@ -1,0 +1,131 @@
+import { quiz } from '../quizzes/vision-transformers'
+import parches from '../snippets/vision-transformers/01_parches.py?raw'
+import vitEmb from '../snippets/vision-transformers/02_vit_embeddings.py?raw'
+import coste from '../snippets/vision-transformers/03_coste.py?raw'
+import ventanas from '../snippets/vision-transformers/04_ventanas.py?raw'
+import coseno from '../snippets/vision-transformers/05_cosine_attention.py?raw'
+import aumento from '../snippets/vision-transformers/06_aumento_perdidas.py?raw'
+
+<Section kind="why">
+
+Durante una década, la visión por computador fue territorio de las redes convolucionales (AlexNet, VGG, ResNet). En 2020, **ViT** demostró que un transformer casi sin cambios, alimentado con **trozos de imagen** en lugar de palabras, iguala o supera a las mejores CNN cuando se entrena con suficientes datos. Hoy los transformers de visión están detrás de la clasificación de imágenes médicas, la inspección industrial, la segmentación de imágenes de satélite y, sobre todo, de los modelos multimodales: cuando un LLM «ve» una imagen, lo hace con un encoder tipo ViT.
+
+El reto específico de la visión es el **tamaño**: una foto de 1024×1024 tiene un millón de píxeles. Este módulo explica cómo se convierte una imagen en una secuencia manejable (parches), cómo **Swin** hace la atención local y jerárquica para escalar a alta resolución, y qué decisiones de datos y de pérdida separan un modelo de demostración de uno robusto.
+
+</Section>
+
+<Section kind="intuition">
+
+**ViT: una imagen vale 16×16 palabras.** Se corta la imagen en parches cuadrados (por ejemplo de 16×16 píxeles), se aplana cada uno en un vector y se proyecta linealmente: cada parche es un token. Se antepone un token especial **[CLS]** cuya salida resume la imagen, se suman posiciones aprendidas y se pasa todo por un encoder transformer normal. Nada en la arquitectura «sabe» que es una imagen: los sesgos de las CNN (localidad, invariancia a traslaciones) se aprenden de los datos, por eso ViT necesita muchos.
+
+<Figure title="Imagen → parches → tokens, y las ventanas de Swin" caption="Cambia el tamaño de parche y compara el número de tokens y el coste de la atención. En modo Swin, las ventanas naranjas delimitan qué parches se atienden entre sí; en la capa siguiente se desplazan.">
+  <ImagePatches />
+</Figure>
+
+**Swin: atención local con ventanas desplazadas.** La atención global cuesta $N^2$; con parches pequeños y alta resolución es inviable. Swin calcula la atención solo **dentro de ventanas** de $M\times M$ parches (coste lineal en $N$). Para que la información cruce las fronteras entre ventanas, en la capa siguiente las ventanas se **desplazan** medio tamaño. Además, cada pocas capas Swin **fusiona** parches vecinos (2×2 → 1), creando una jerarquía de resoluciones como una CNN: ideal para detección y segmentación.
+
+**Swin V2** escala esta idea a 3 mil millones de parámetros con tres cambios de estabilidad: normalizar la salida de cada bloque residual antes de sumarla (*res-post-norm*), usar el **coseno** entre query y key en lugar del producto punto (acotado, no explota) y un sesgo posicional calculado por una pequeña red sobre coordenadas **log-espaciadas**, que se transfiere bien entre tamaños de ventana.
+
+</Section>
+
+<Section kind="formal">
+
+Una imagen $x \in \mathbb{R}^{H\times W\times C}$ (números reales) se divide en parches de $P\times P$:
+
+<Formula label="Número de parches" tex="N = \frac{H W}{P^2},\qquad x_p \in \mathbb{R}^{N\times (P^2 C)}" reading="el número de parches es H por W dividido entre P al cuadrado, y la matriz de parches aplanados tiene N filas de P al cuadrado por C números reales">
+  Con $224\times224\times3$ y $P = 16$: $N = 196$ parches de 768 valores.
+</Formula>
+
+<Formula label="Embeddings de entrada de ViT" tex="z_0 = \big[\,x_{class};\ x_p^1 E;\ x_p^2 E;\ \dots;\ x_p^N E\,\big] + E_{pos}" reading="la secuencia inicial es el token de clase seguido de cada parche multiplicado por la matriz E, más las posiciones aprendidas">
+  $E \in \mathbb{R}^{(P^2C)\times D}$ (matriz de números reales) es la proyección de parches (equivale a una convolución con kernel y paso $P$) y $E_{pos} \in \mathbb{R}^{(N+1)\times D}$ las posiciones. La predicción usa la salida del token de clase.
+</Formula>
+
+<Formula label="Coste de la atención" tex="\Omega(\text{global}) = 4ND^2 + 2N^2D,\qquad \Omega(\text{ventanas}) = 4ND^2 + 2M^2ND" reading="la atención global cuesta cuatro N D al cuadrado más dos N al cuadrado D; la atención por ventanas de M por M cuesta cuatro N D al cuadrado más dos M al cuadrado N D">
+  El primer término son las proyecciones; el segundo, las puntuaciones. Con ventanas fijas de $M = 7$, el coste pasa de cuadrático a **lineal** en $N$.
+</Formula>
+
+<Formula label="Atención por coseno escalado (Swin V2)" tex="\operatorname{Sim}(q_i, k_j) = \frac{\cos(q_i, k_j)}{\tau} + B_{ij}" reading="la similitud entre la query i y la key j es el coseno entre ellas dividido entre tau, más el sesgo posicional B sub i j">
+  $\tau \gt 0.01$ es una temperatura aprendida por cabeza y capa. El coseno está acotado en $[-1, 1]$: evita que unos pocos pares dominen la atención en modelos grandes.
+</Formula>
+
+<Formula label="Coordenadas log-espaciadas" tex="\widehat{\Delta x} = \operatorname{sign}(\Delta x)\,\log(1 + |\Delta x|)" reading="la coordenada log-espaciada es el signo de delta x por el logaritmo de uno más el valor absoluto de delta x">
+  El sesgo $B$ lo produce una pequeña red $G(\widehat{\Delta x}, \widehat{\Delta y})$. En escala logarítmica, pasar de ventanas de 8 a 24 apenas requiere extrapolar.
+</Formula>
+
+<Formula label="Pérdida Dice" tex="\mathcal{L}_{Dice} = 1 - \frac{2\sum_i p_i\,g_i}{\sum_i p_i + \sum_i g_i}" reading="la pérdida Dice es uno menos dos veces la suma de los productos de la predicción y la verdad, dividido entre la suma de predicciones más la suma de verdades">
+  $p_i$ es la probabilidad predicha y $g_i \in \{0, 1\}$ la etiqueta de cada píxel. Mide solapamiento, así que no la domina el fondo cuando el objeto es pequeño.
+</Formula>
+
+</Section>
+
+<Section kind="example">
+
+<WorkedExample>
+<Problem>
+Un ViT-B/16 procesa imágenes de $384\times384$. ¿Cuántos tokens recibe el encoder y cuántas puntuaciones calcula cada cabeza de atención? Compáralo con $224\times224$.
+</Problem>
+<Step>
+Parches: $(384/16)^2 = 24^2 = 576$. Con el token [CLS]: $577$ tokens.
+</Step>
+<Step>
+Puntuaciones por cabeza y capa: $577^2 = 332\,929$.
+</Step>
+<Step>
+A $224\times224$: $14^2 + 1 = 197$ tokens y $197^2 = 38\,809$ puntuaciones. Subir la resolución $1.7\times$ en cada lado multiplica la atención por $\approx 8.6$.
+</Step>
+<Step>
+Además, las posiciones aprendidas eran $14\times14$ y ahora hacen falta $24\times24$: se **interpolan** bilinealmente. Es el equivalente visual de la interpolación de posiciones de <StageRef slug="contexto-largo" />.
+</Step>
+</WorkedExample>
+
+</Section>
+
+<Section kind="lab">
+
+<PyCell title="De imagen a parches" code={parches} />
+<PyCell title="Embeddings de ViT y el token [CLS]" code={vitEmb} />
+<PyCell title="Atención global frente a ventanas" code={coste} />
+<PyCell title="Ventanas y ventanas desplazadas" code={ventanas} />
+<PyCell title="Atención por coseno y coordenadas log-espaciadas" code={coseno} />
+<PyCell title="Aumento de datos, Dice y pérdida focal" code={aumento} />
+
+</Section>
+
+<Section kind="quiz">
+
+<Quiz questions={quiz} />
+
+</Section>
+
+<Section kind="ml">
+
+**Estrategias que deciden la robustez** (y que dependen de la tarea):
+
+- **Aumento de datos.** Volteos, recortes, cambios de color; *Mixup* y *CutMix* para clasificación. En imagen médica, deformaciones elásticas y variaciones de intensidad que imiten la variabilidad real; nunca volteos que cambien el significado (izquierda/derecha anatómica).
+- **Regularización.** *Dropout*, *weight decay*, *stochastic depth* y parada temprana. Los ViT sobreajustan con facilidad en datasets pequeños: parte siempre de un modelo preentrenado.
+- **Pérdidas.** Para segmentar tejados en satélite, IoU o Dice; para lesiones raras en imagen médica, **focal** o combinaciones Dice + entropía cruzada, que compensan el desbalance.
+
+**Ajuste fino en la práctica.** Con `transformers`, `AutoModelForImageClassification.from_pretrained("microsoft/swinv2-tiny-patch4-window8-256", num_labels=20)` y un `Trainer` bastan para adaptar Swin V2 a un dataset propio, como el de 20 tipos de *snacks* del libro.
+
+El notebook opcional [`11_vision_transformers.ipynb`](https://github.com/joserodriguezc/transfomers_guide/blob/main/notebooks/11_vision_transformers.ipynb) ajusta Swin V2 a ese dataset y visualiza los mapas de atención del token [CLS] de un ViT.
+
+<KeyTakeaways>
+- ViT corta la imagen en parches, los proyecta linealmente y los trata como tokens; el token [CLS] resume la imagen.
+- La atención global cuesta $N^2$; Swin la limita a ventanas locales (coste lineal) y las desplaza para conectar regiones.
+- Swin es jerárquico: fusiona parches y produce mapas a varias resoluciones, útiles para detección y segmentación.
+- Swin V2 estabiliza modelos grandes con res-post-norm, atención por coseno y sesgo posicional log-espaciado.
+- Aumento de datos, regularización y pérdida (Dice, focal) deben elegirse según la tarea.
+</KeyTakeaways>
+
+**Lectura recomendada:** capítulo 3, secciones «Embeddings and Tokenization for Vision Models», «Key Strategies for Improving the Robustness…» y «Swin Transformer V2».
+
+</Section>
+
+<Section kind="extensions">
+
+1. Implementa la fusión de parches de Swin (*patch merging*): concatena cada bloque de 2×2 parches y proyéctalo a $2D$. ¿Cómo cambian $N$ y $D$?
+2. Interpola bilinealmente una tabla de posiciones aprendidas de $14\times14$ a $24\times24$ con `scipy.ndimage.zoom`.
+3. En `04_ventanas.py`, construye la máscara que impide que, tras el desplazamiento cíclico, se atiendan parches que no eran vecinos en la imagen original.
+4. Compara la pérdida Dice y la entropía cruzada cuando el objeto ocupa el 1 % de la imagen y el modelo predice «todo fondo».
+
+</Section>

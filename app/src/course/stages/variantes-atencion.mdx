@@ -1,0 +1,139 @@
+import { quiz } from '../quizzes/variantes-atencion'
+import gqa from '../snippets/variantes-atencion/01_gqa.py?raw'
+import kvCache from '../snippets/variantes-atencion/02_kv_cache.py?raw'
+import memoria from '../snippets/variantes-atencion/03_memoria_kv.py?raw'
+import online from '../snippets/variantes-atencion/04_online_softmax.py?raw'
+import flash from '../snippets/variantes-atencion/05_flash_attention.py?raw'
+import paged from '../snippets/variantes-atencion/06_paged.py?raw'
+
+<Section kind="why">
+
+Cuando un LLM responde, cada token nuevo necesita las keys y values de **todos los anteriores**, en **todas las capas**. Guardarlos (la **KV cache**) evita recalcularlos, pero ocupa memoria: para un modelo de 8 mil millones de parámetros con 128 000 tokens de contexto, unos 16 GiB **por usuario**. En producción, la KV cache —no los pesos— suele ser lo que limita cuántas peticiones caben a la vez en una GPU.
+
+Además, la atención estándar construye una matriz $N\times N$ de puntuaciones: con $N = 32\,000$, son mil millones de números por cabeza y capa. Este módulo recorre las variantes que hacen viables los modelos actuales: **MQA** y **GQA** (menos keys y values), la **KV cache**, **FlashAttention** (calcular sin materializar la matriz), **PagedAttention** (gestionar la caché como memoria virtual) y la **atención dispersa** (no calcular todos los pares).
+
+</Section>
+
+<Section kind="intuition">
+
+**Compartir keys y values.** En la atención multi-cabeza (<StageRef slug="multi-cabeza" />) cada cabeza tiene sus propias $Q$, $K$ y $V$. **MQA** usa una sola $K$ y una sola $V$ para todas las cabezas de query; **GQA** forma grupos de queries que comparten una $K$ y una $V$. La calidad de GQA es casi la de MHA y su caché es varias veces menor.
+
+<Figure title="MHA, GQA y MQA" caption="Cada cabeza de query (arriba) usa la key/value de su color. La KV cache es proporcional al número de cajas de abajo.">
+  <KVSharing />
+</Figure>
+
+<Figure title="Calculadora de la KV cache" caption="Prueba los valores de Llama 3 8B (32 capas, 32 cabezas Q, 8 KV, d_head 128) y sube el contexto a 2¹⁷ ≈ 131 000 tokens o el lote a 32 usuarios.">
+  <KVCacheCalculator />
+</Figure>
+
+**FlashAttention** parte de una observación de hardware: la GPU calcula muchísimo más rápido de lo que mueve datos desde su memoria principal (HBM) a la memoria rápida del chip (SRAM). En lugar de escribir la matriz $N\times N$ en HBM y volver a leerla, procesa **bloques** de $Q$, $K$ y $V$ que caben en SRAM y acumula el resultado. El truco matemático es la **softmax en línea**: se puede normalizar por partes si se lleva la cuenta del máximo y de la suma, y se corrigen al llegar cada bloque.
+
+<Figure title="La softmax en línea, bloque a bloque" caption="Cada bloque puede subir el máximo m; la suma acumulada ℓ se reescala. Al final, el resultado es exactamente la softmax.">
+  <OnlineSoftmaxStepper />
+</Figure>
+
+**Atención dispersa.** Otra opción es no calcular todos los pares: una **ventana deslizante** (cada token mira solo a los $w$ anteriores, como Mistral), patrones dilatados o unos pocos tokens globales.
+
+<Figure title="Patrones de atención dispersa" caption="Cuenta los pares calculados en cada patrón. Apilando capas con ventana w, la información viaja w posiciones por capa.">
+  <SparsePatterns />
+</Figure>
+
+</Section>
+
+<Section kind="formal">
+
+Con $h$ cabezas de query y $g$ cabezas de key/value ($g$ divide a $h$), la cabeza de query $i$ usa la KV del grupo $\lceil i\,g/h \rceil$:
+
+<Formula label="Grouped-query attention" tex="\operatorname{head}_i = \operatorname{Attention}\!\left(Q_i,\ K_{\lceil i g/h\rceil},\ V_{\lceil i g/h\rceil}\right)" reading="la cabeza i usa su propia query y la key y el value del grupo techo de i por g sobre h">
+  $g = h$ es MHA; $g = 1$ es MQA. Llama 3 usa $h = 32$ y $g = 8$.
+</Formula>
+
+<Formula label="Memoria de la KV cache" tex="M_{KV} = 2 \cdot L \cdot g \cdot d_{head} \cdot T \cdot B \cdot b" reading="la memoria de la KV cache es dos por el número de capas L por las cabezas KV g por la dimensión de cabeza por los tokens T por el tamaño del lote B por los bytes por valor b">
+  El 2 cuenta $K$ y $V$. Crece **linealmente** con el contexto $T$ y con el número de usuarios $B$. Reducir $g$ (GQA) o $b$ (FP8) la reduce en la misma proporción.
+</Formula>
+
+<Formula label="Softmax en línea" tex="m^{(j)} = \max\!\big(m^{(j-1)}, \max_{l \in B_j} x_l\big),\qquad \ell^{(j)} = \ell^{(j-1)} e^{m^{(j-1)} - m^{(j)}} + \sum_{l \in B_j} e^{x_l - m^{(j)}}" reading="el máximo tras el bloque j es el mayor entre el máximo anterior y el del bloque; la suma tras el bloque j es la suma anterior reescalada por e elevado a la diferencia de máximos, más la suma de exponenciales del bloque">
+  $B_j$ es el bloque $j$ de logits. Al terminar, $\operatorname{softmax}(x)_l = e^{x_l - m}/\ell$. La salida acumulada $O$ se reescala con el mismo factor $e^{m^{(j-1)} - m^{(j)}}$.
+</Formula>
+
+<Formula label="Coste de memoria" tex="\text{estándar: } O(N^2),\qquad \text{FlashAttention: } O(N)" reading="la atención estándar necesita memoria del orden de N al cuadrado; FlashAttention, del orden de N">
+  Las operaciones siguen siendo $O(N^2 d)$: FlashAttention es **exacta** y no reduce cálculo, reduce **movimiento de memoria**. Por eso acelera 2–4×.
+</Formula>
+
+<Formula label="Atención con ventana deslizante" tex="M_{ij} = \begin{cases} 0 & \text{si } i - w \lt j \le i \\ -\infty & \text{en otro caso} \end{cases}" reading="la máscara vale cero si j está entre i menos w, sin incluir, e i; y menos infinito en otro caso">
+  Coste $O(N w)$ en lugar de $O(N^2)$. Tras $L$ capas, el campo receptivo es de unas $L\,w$ posiciones.
+</Formula>
+
+</Section>
+
+<Section kind="example">
+
+<WorkedExample>
+<Problem>
+Un modelo tiene 32 capas, 32 cabezas de query de dimensión 128 y GQA con 8 cabezas KV. Sirve 16 usuarios con 8192 tokens cada uno en FP16. ¿Cuánta KV cache necesita? ¿Y con MHA?
+</Problem>
+<Step>
+Por token y capa: $2 \cdot 8 \cdot 128 = 2048$ valores; en FP16 (2 bytes), 4096 bytes = 4 KiB.
+</Step>
+<Step>
+Por token en todo el modelo: $32 \cdot 4\ \text{KiB} = 128$ KiB.
+</Step>
+<Step>
+Total: $128\ \text{KiB} \cdot 8192 \cdot 16 = 16\,777\,216$ KiB $= 16$ GiB.
+</Step>
+<Step>
+Con MHA habría 32 cabezas KV en lugar de 8: $4\times$ más, **64 GiB**, que junto a los 16 GB de pesos ya no cabría en una GPU de 80 GB. GQA es lo que hace viable ese despliegue.
+</Step>
+</WorkedExample>
+
+</Section>
+
+<Section kind="lab">
+
+<PyCell title="Grouped-query attention" code={gqa} />
+<PyCell title="Decodificar con KV cache" code={kvCache} hint="Con caché, cada paso calcula solo la K y la V del token nuevo." />
+<PyCell title="La memoria de la KV cache en modelos reales" code={memoria} />
+<PyCell title="Softmax en línea" code={online} />
+<PyCell title="Atención por bloques al estilo FlashAttention" code={flash} hint="Cambia el tamaño de bloque B (divisor de 64): el resultado no cambia." />
+<PyCell title="PagedAttention: menos memoria desperdiciada" code={paged} />
+
+</Section>
+
+<Section kind="quiz">
+
+<Quiz questions={quiz} />
+
+</Section>
+
+<Section kind="ml">
+
+**Qué usar en la práctica.** No implementarás FlashAttention a mano: PyTorch (`scaled_dot_product_attention`), vLLM, TGI o SGLang lo eligen solos. Lo que sí decides es:
+
+- **El motor de inferencia.** vLLM usa **PagedAttention**: guarda la KV cache en páginas no contiguas, como la memoria virtual de un sistema operativo, comparte prefijos entre peticiones y alcanza hasta 4× más rendimiento. TGI es muy estable con mucha concurrencia; mide con tu carga antes de decidir.
+- **La precisión de la caché.** Guardar la KV cache en FP8 la divide por dos con poca pérdida. FlashAttention-3 aprovecha FP8 en GPUs H100 con *block quantization* y rotaciones de Hadamard para repartir los valores atípicos.
+- **El modelo.** A igualdad de calidad, un modelo con GQA (o con capas de ventana deslizante) sirve muchos más usuarios por GPU.
+
+FlashAttention-2 reorganizó los bucles para paralelizar a lo largo de la secuencia y reducir operaciones que no son multiplicaciones de matrices (las *tensor cores* son hasta 16× más rápidas en ellas); FlashAttention-3 superpone carga de datos y cálculo (*ping-pong scheduling*).
+
+El notebook opcional [`08_atencion_eficiente.ipynb`](https://github.com/joserodriguezc/transfomers_guide/blob/main/notebooks/08_atencion_eficiente.ipynb) mide en PyTorch el tiempo y la memoria de la atención estándar frente a `scaled_dot_product_attention` y el efecto de la KV cache en `generate`.
+
+<KeyTakeaways>
+- MQA y GQA comparten keys y values entre cabezas de query: la KV cache se divide por $h/g$.
+- La KV cache crece con capas × cabezas KV × contexto × usuarios; a menudo limita el despliegue más que los pesos.
+- FlashAttention es exacta: calcula por bloques con la softmax en línea y evita escribir la matriz $N\times N$.
+- PagedAttention gestiona la KV cache en páginas y casi elimina la memoria desperdiciada.
+- La atención con ventana deslizante reduce el coste a $O(Nw)$.
+</KeyTakeaways>
+
+**Lectura recomendada:** capítulo 1, sección «Attention Mechanism Variations» (MQA, GQA, KV caching, FlashAttention 1–3, PagedAttention).
+
+</Section>
+
+<Section kind="extensions">
+
+1. Amplía `05_flash_attention.py` con máscara causal y salta los bloques que quedan enteros por encima de la diagonal. ¿Cuánto trabajo ahorras?
+2. Convierte un modelo MHA en GQA promediando las keys y values de cada grupo (como propone el artículo de GQA) y mide cuánto cambia la salida en `01_gqa.py`.
+3. Calcula la KV cache de Llama 3 70B sirviendo 64 usuarios con 32 000 tokens en FP8.
+4. Implementa una caché con prefijos compartidos: dos peticiones con el mismo mensaje de sistema reutilizan sus páginas.
+
+</Section>

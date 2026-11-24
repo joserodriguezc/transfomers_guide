@@ -1,0 +1,140 @@
+import { quiz } from '../quizzes/atencion'
+import softmax from '../snippets/atencion/01_softmax.py?raw'
+import atencion from '../snippets/atencion/02_atencion.py?raw'
+import escalar from '../snippets/atencion/03_por_que_escalar.py?raw'
+import mapa from '../snippets/atencion/04_mapa_atencion.py?raw'
+import funcion from '../snippets/atencion/05_atencion_funcion.py?raw'
+
+<Section kind="why">
+
+En «el **banco** del río estaba lleno de patos» y «el **banco** me denegó el préstamo», la palabra es la misma y el embedding de entrada también (<StageRef slug="embeddings-posicion" />). Lo que cambia es el **contexto**. La atención es el mecanismo que permite que la representación de cada token se actualice con la información de los demás: `banco` mira a `río` en una frase y a `préstamo` en la otra.
+
+Es también la razón del éxito del transformer frente a las redes recurrentes (LSTM): en lugar de pasar la información paso a paso por una cadena, **cada token puede consultar directamente a cualquier otro**, y todos los tokens se procesan **en paralelo** en la GPU. El transformer original igualó la calidad de traducción de los mejores LSTM tras solo 3.5 días de entrenamiento.
+
+La misma operación funciona sin cambios con parches de imagen, tramas de audio o pasos de una serie temporal: es el corazón de todo el curso.
+
+</Section>
+
+<Section kind="intuition">
+
+Piensa en la atención como una **búsqueda difusa en una base de datos**:
+
+- Cada token emite una **query** $q$: «¿qué estoy buscando?».
+- Cada token publica una **key** $k$: «esto es lo que ofrezco».
+- Y un **value** $v$: «este es el contenido que entrego si me eligen».
+
+La query se compara con todas las keys mediante el **producto punto** (alto si apuntan en la misma dirección). La **softmax** convierte esas puntuaciones en pesos positivos que suman 1. La salida es la **media de los values ponderada** por esos pesos. A diferencia de un diccionario, no se elige una sola entrada: se mezclan todas en proporción a su relevancia.
+
+<Figure title="Una query frente a seis keys" caption="Arrastra la query q. El grosor de cada flecha gris es su peso de atención; la flecha verde es la salida (aquí values = keys para verlo en el plano). Prueba el divisor: pequeño, la atención se concentra; grande, se reparte.">
+  <AttentionExplorer />
+</Figure>
+
+Con todos los tokens a la vez, los pesos forman una **matriz de atención** $n \times n$: la fila $i$ dice a quién atiende el token $i$.
+
+<Figure title="La matriz de atención de una frase" caption="Proyecciones aleatorias (sin entrenar): lo importante es la forma. Cada fila suma 1; con la máscara causal, el triángulo superior queda a cero.">
+  <AttentionMatrix />
+</Figure>
+
+</Section>
+
+<Section kind="formal">
+
+Sea $X \in \mathbb{R}^{n\times d}$ (matriz de números reales) la secuencia de $n$ tokens, un vector de dimensión $d$ por fila. Las queries, keys y values son **proyecciones lineales** de la misma entrada:
+
+<Formula label="Proyecciones" tex="Q = X W_Q,\qquad K = X W_K,\qquad V = X W_V" reading="Q es X por W sub Q, K es X por W sub K y V es X por W sub V">
+  $W_Q, W_K \in \mathbb{R}^{d\times d_k}$ y $W_V \in \mathbb{R}^{d\times d_v}$ son matrices de pesos entrenables (de números reales). Como se calculan a partir de la misma $X$, se habla de **auto-atención** (*self-attention*).
+</Formula>
+
+<Formula label="Softmax" tex="\operatorname{softmax}(z)_j = \frac{e^{z_j}}{\sum_{l=1}^{m} e^{z_l}}" reading="la componente j de la softmax de z es e elevado a z sub j dividido entre la suma, para l desde 1 hasta m, de e elevado a z sub l">
+  Convierte cualquier vector de puntuaciones en una distribución de probabilidad. Restar $\max_l z_l$ a todas las componentes no cambia el resultado y evita desbordamientos numéricos.
+</Formula>
+
+<Formula label="Atención por producto escalado" tex="\operatorname{Attention}(Q, K, V) = \operatorname{softmax}\!\left(\frac{QK^T}{\sqrt{d_k}}\right) V" reading="la atención de Q, K y V es la softmax, aplicada por filas, de Q por K transpuesta dividido entre la raíz de d sub k, multiplicada por V">
+  $QK^T$ es una matriz $n\times n$ cuyo elemento $(i, j)$ es $q_i \cdot k_j$. La softmax se aplica a cada fila. El resultado tiene forma $n \times d_v$: una nueva representación por token.
+</Formula>
+
+<Formula label="Salida de un token" tex="y_i = \sum_{j=1}^{n} \alpha_{ij}\, v_j,\qquad \alpha_{ij} = \frac{\exp(q_i \cdot k_j/\sqrt{d_k})}{\sum_{l}\exp(q_i \cdot k_l/\sqrt{d_k})}" reading="la salida y sub i es la suma, para j desde 1 hasta n, de alfa sub i j por v sub j, donde alfa sub i j es la exponencial de q sub i por k sub j sobre raíz de d sub k, normalizada por la suma sobre todas las keys">
+  Los $\alpha_{ij}$ son los pesos de atención: $\alpha_{ij} \ge 0$ y $\sum_j \alpha_{ij} = 1$.
+</Formula>
+
+**¿Por qué $\sqrt{d_k}$?** Si las componentes de $q$ y $k$ son independientes, con media 0 y varianza 1, el producto punto es una suma de $d_k$ términos de varianza 1:
+
+<Formula label="Varianza del producto punto" tex="\operatorname{Var}(q \cdot k) = \sum_{i=1}^{d_k}\operatorname{Var}(q_i k_i) = d_k" reading="la varianza de q por k es la suma de las varianzas de los productos q sub i por k sub i, que vale d sub k">
+  Con $d_k = 128$, las puntuaciones tendrían desviación típica $\approx 11$: la softmax daría casi todo el peso a un solo token y sus gradientes serían prácticamente cero. Dividir por $\sqrt{d_k}$ devuelve la varianza a 1.
+</Formula>
+
+<Formula label="Coste" tex="O(n^2 d_k)\ \text{operaciones},\qquad O(n^2)\ \text{memoria para los pesos}" reading="la atención cuesta del orden de n al cuadrado por d sub k operaciones y del orden de n al cuadrado de memoria">
+  Duplicar la longitud de la secuencia cuadruplica el coste. Es el gran cuello de botella que atacan los módulos <StageRef slug="contexto-largo" bare /> y <StageRef slug="variantes-atencion" bare />.
+</Formula>
+
+</Section>
+
+<Section kind="example">
+
+<WorkedExample>
+<Problem>
+Tres tokens con $d_k = 2$: $Q = \begin{bmatrix}1&0\\0&1\\1&1\end{bmatrix}$, $K = \begin{bmatrix}2&0\\0&2\\1&1\end{bmatrix}$, $V = \begin{bmatrix}1&0\\0&1\\1&1\end{bmatrix}$. Calcula la salida del **primer** token.
+</Problem>
+<Step>
+Puntuaciones del token 1: $q_1 K^T = (1\cdot2 + 0,\ 0 + 0,\ 1 + 0) = (2,\ 0,\ 1)$.
+</Step>
+<Step>
+Escalado: $\sqrt{d_k} = \sqrt2 \approx 1.414$, así que $(2, 0, 1)/1.414 \approx (1.414,\ 0,\ 0.707)$.
+</Step>
+<Step>
+Exponenciales: $e^{1.414} \approx 4.113$, $e^{0} = 1$, $e^{0.707} \approx 2.028$. Suma $\approx 7.141$.
+</Step>
+<Step>
+Pesos: $\alpha_1 \approx (0.576,\ 0.140,\ 0.284)$. Suman 1 ✓. El token 1 atiende sobre todo a la key 1, que apunta en su misma dirección.
+</Step>
+<Step>
+Salida: $y_1 = 0.576\,(1,0) + 0.140\,(0,1) + 0.284\,(1,1) = (0.860,\ 0.424)$.
+</Step>
+</WorkedExample>
+
+</Section>
+
+<Section kind="lab">
+
+<PyCell title="Softmax estable y temperatura" code={softmax} />
+<PyCell title="Atención por producto escalado desde cero" code={atencion} hint="Cambia n o d_k y comprueba las formas de S, A e Y." />
+<PyCell title="Por qué se divide por √d_k" code={escalar} />
+<PyCell title="Un mapa de atención interpretable" code={mapa} hint="Los verbos («come», «tiene») atienden a los sustantivos; el resto se mira a sí mismo." />
+<PyCell title="La atención como función reutilizable" code={funcion} />
+
+</Section>
+
+<Section kind="quiz">
+
+<Quiz questions={quiz} />
+
+</Section>
+
+<Section kind="ml">
+
+**Leer la atención.** Los pesos $\alpha_{ij}$ se usan a menudo para interpretar un modelo («¿en qué se fijó para decidir?»). Librerías como Captum o BertViz los visualizan. Con cautela: la atención dice *de dónde* se mezcla la información, no *por qué* el modelo decide; los métodos de atribución basados en gradientes son más fiables.
+
+**En PyTorch** la operación completa es `torch.nn.functional.scaled_dot_product_attention(q, k, v, is_causal=True)`, que elige automáticamente una implementación eficiente (FlashAttention cuando es posible).
+
+El notebook opcional [`03_atencion.ipynb`](https://github.com/joserodriguezc/transfomers_guide/blob/main/notebooks/03_atencion.ipynb) extrae las matrices de atención reales de BERT para «The bank of the river» y «The bank approved the loan».
+
+<KeyTakeaways>
+- Queries, keys y values son tres proyecciones lineales de la misma entrada.
+- La atención calcula $\operatorname{softmax}(QK^T/\sqrt{d_k})\,V$: puntuar, normalizar y mezclar.
+- Cada fila de la matriz de atención es una distribución de probabilidad sobre los tokens.
+- Dividir por $\sqrt{d_k}$ mantiene la varianza de las puntuaciones en 1 y evita saturar la softmax.
+- El coste es cuadrático en la longitud de la secuencia.
+</KeyTakeaways>
+
+**Lectura recomendada:** capítulo 1, sección «Attention Mechanism».
+
+</Section>
+
+<Section kind="extensions">
+
+1. Demuestra que si se multiplican todas las keys por una constante $c > 1$, la atención se vuelve más concentrada. ¿Qué papel juega entonces la norma de las keys?
+2. Implementa la retropropagación de la softmax: demuestra que $\partial\,\operatorname{softmax}(z)_i/\partial z_j = p_i(\delta_{ij} - p_j)$ y compruébalo numéricamente.
+3. Sustituye la softmax por una sigmoide elemento a elemento (como hace la *sigmoid attention*) y compara las matrices resultantes.
+4. Mide con `time` cuánto tarda tu función de atención para $n = 256, 512, 1024, 2048$ y comprueba el crecimiento cuadrático.
+
+</Section>

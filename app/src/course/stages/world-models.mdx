@@ -1,0 +1,117 @@
+import { quiz } from '../quizzes/world-models'
+import dinamica from '../snippets/world-models/01_aprender_dinamica.py?raw'
+import planificar from '../snippets/world-models/02_planificar.py?raw'
+import compuesto from '../snippets/world-models/03_error_compuesto.py?raw'
+import infonce from '../snippets/world-models/04_infonce.py?raw'
+import estocastico from '../snippets/world-models/05_estocastico.py?raw'
+
+<Section kind="why">
+
+Un agente de RL sin modelo (<StageRef slug="rl-decision-transformer" />) aprende solo de lo que le pasa: necesita millones de interacciones para dominar un videojuego sencillo. Las personas no aprendemos así: tenemos una idea de **cómo funciona el mundo** y podemos **imaginar** qué pasaría si hiciéramos algo antes de hacerlo.
+
+Un **modelo del mundo** es exactamente eso: una red que aprende la dinámica del entorno —dado el estado actual y una acción, qué estado y qué recompensa vienen después— para que el agente pueda entrenar y planificar **en su imaginación**, mucho más barato que en la realidad. Con transformers como modelos del mundo (IRIS, STORM, TWISTER), los agentes aprenden juegos de Atari con solo 100 000 interacciones (unas dos horas de juego humano). La misma idea aparece hoy en robótica, conducción autónoma y en los «modelos del mundo» generativos de vídeo.
+
+</Section>
+
+<Section kind="intuition">
+
+**Tres piezas.** (1) Un **codificador** comprime la observación (una imagen del juego) en un estado latente compacto. (2) Un **modelo de dinámica** —aquí un transformer causal sobre la secuencia de latentes y acciones— predice el siguiente latente, la recompensa y si el episodio termina. (3) Un **agente** (actor-crítico) aprende a actuar **solo con trayectorias imaginadas** por el modelo.
+
+**El problema del error compuesto.** Cada predicción tiene un pequeño error, y al encadenar predicciones el error se acumula: la imaginación se aleja de la realidad. Por eso los agentes imaginan horizontes cortos (unos 15 pasos) partiendo de estados reales recientes, y recogen datos reales periódicamente para corregir el modelo.
+
+<Figure title="Imaginar con un modelo imperfecto" caption="Azul: dinámica real; rojo discontinuo: la que imagina el modelo. Sube el error del modelo o el horizonte y observa cómo crece la distancia.">
+  <WorldModelRollout />
+</Figure>
+
+**Futuros inciertos.** Muchos entornos son estocásticos: la misma acción puede llevar a resultados distintos. Un modelo determinista entrenado con error cuadrático predice la **media** de los futuros posibles, que puede ser un estado imposible. Los modelos estocásticos (STORM, DreamerV3) predicen una **distribución** sobre latentes categóricos y muestrean de ella.
+
+**Predecir lo que importa (TWISTER).** Predecir el siguiente fotograma píxel a píxel desperdicia capacidad en detalles irrelevantes. La **codificación predictiva contrastiva** (CPC) entrena al modelo para que su predicción del futuro sea **reconocible** entre muchos futuros falsos, lo que le obliga a capturar lo esencial a varios pasos vista.
+
+</Section>
+
+<Section kind="formal">
+
+<Formula label="Modelo del mundo" tex="z_t = \operatorname{enc}_\phi(o_t),\qquad (\hat z_{t+1},\ \hat r_t,\ \hat c_t) = f_\psi(z_{\le t},\ a_{\le t})" reading="el latente z sub t es el codificador aplicado a la observación; el modelo f sub psi predice el siguiente latente, la recompensa y si el episodio continúa, a partir de los latentes y acciones hasta t">
+  $f_\psi$ es un transformer causal sobre la secuencia intercalada de latentes y acciones. $\hat c_t$ es la probabilidad de que el episodio continúe.
+</Formula>
+
+<Formula label="Error compuesto (dinámica lineal)" tex="\|s_h - \hat s_h\| \le \sum_{k=0}^{h-1} L^k\,\epsilon" reading="el error tras h pasos imaginados es como mucho la suma, para k desde 0 hasta h menos 1, de L elevado a k por épsilon">
+  $\epsilon$ es el error de un solo paso y $L$ cuánto amplifica la dinámica las diferencias. Con $L \ge 1$, el error crece al menos linealmente con el horizonte $h$.
+</Formula>
+
+<Formula label="Pérdida contrastiva InfoNCE" tex="\mathcal{L}_{NCE} = -\log \frac{\exp\big(\operatorname{sim}(\hat z_{t+k}, z_{t+k})/\tau\big)}{\sum_{j=1}^{N}\exp\big(\operatorname{sim}(\hat z_{t+k}, z_j)/\tau\big)}" reading="la pérdida es menos el logaritmo de la exponencial de la similitud entre la predicción y el futuro real, dividida entre la suma de exponenciales de la similitud con N candidatos, incluido el real">
+  Es una clasificación entre $N$ candidatos: el positivo y $N - 1$ negativos (futuros de otras trayectorias del lote). Con un modelo al azar vale $\log N$.
+</Formula>
+
+<Formula label="Latente categórico" tex="z_{t+1} \sim \operatorname{Cat}\big(\operatorname{softmax}(\ell_\psi)\big),\qquad \text{gradiente: } \ \tilde z = z + p - \operatorname{sg}(p)" reading="el siguiente latente se muestrea de una distribución categórica con probabilidades softmax de los logits; para pasar el gradiente se usa z más p menos p sin gradiente">
+  $\operatorname{sg}$ (*stop-gradient*) hace el truco *straight-through*: hacia delante se usa la muestra discreta $z$, hacia atrás el gradiente de las probabilidades $p$.
+</Formula>
+
+</Section>
+
+<Section kind="example">
+
+<WorkedExample>
+<Problem>
+InfoNCE con $N = 4$ candidatos y $\tau = 1$. Las similitudes entre la predicción y los candidatos son $(2, 0, 0, 0)$, donde el primero es el futuro real. Calcula la pérdida y compárala con un modelo al azar.
+</Problem>
+<Step>
+Exponenciales: $e^2 \approx 7.389$ y tres veces $e^0 = 1$. Suma $\approx 10.389$.
+</Step>
+<Step>
+Probabilidad asignada al positivo: $7.389/10.389 \approx 0.711$.
+</Step>
+<Step>
+Pérdida: $-\log 0.711 \approx 0.341$.
+</Step>
+<Step>
+Un modelo al azar (todas las similitudes iguales) daría $-\log(1/4) = \log 4 \approx 1.386$. Bajar la temperatura a $\tau = 0.5$ duplicaría la diferencia de logits ($e^4$ frente a 1) y la pérdida caería a $\approx 0.054$.
+</Step>
+</WorkedExample>
+
+</Section>
+
+<Section kind="lab">
+
+<PyCell title="Aprender la dinámica a partir de datos" code={dinamica} />
+<PyCell title="Planificar imaginando (control predictivo)" code={planificar} hint="El agente prueba 200 planes en el modelo, ejecuta la primera acción del mejor y vuelve a planificar." />
+<PyCell title="El error compuesto" code={compuesto} />
+<PyCell title="Pérdida contrastiva InfoNCE" code={infonce} />
+<PyCell title="Por qué un modelo estocástico" code={estocastico} />
+
+</Section>
+
+<Section kind="quiz">
+
+<Quiz questions={quiz} />
+
+</Section>
+
+<Section kind="ml">
+
+**El ciclo de entrenamiento de un agente con modelo del mundo** alterna tres fases: recoger un poco de experiencia real con la política actual; entrenar el modelo del mundo con todos los datos reales; y entrenar el actor-crítico **solo en la imaginación**, partiendo de estados reales. TWISTER combina un modelo del mundo transformer con la pérdida contrastiva a varios pasos y obtiene resultados punteros en el banco de pruebas Atari 100k.
+
+**Más allá de los juegos.** Los modelos del mundo permiten entrenar robots en simulación aprendida, evaluar políticas peligrosas sin ejecutarlas y planificar en conducción autónoma. Y conectan con los generadores de vídeo (<StageRef slug="dit-video" />): un modelo de vídeo condicionado a acciones es, en el fondo, un modelo del mundo.
+
+El notebook opcional [`18_world_models.ipynb`](https://github.com/joserodriguezc/transfomers_guide/blob/main/notebooks/18_world_models.ipynb) entrena en PyTorch un pequeño transformer como modelo del mundo de un entorno de `gymnasium` y compara trayectorias imaginadas con las reales.
+
+<KeyTakeaways>
+- Un modelo del mundo predice el siguiente estado, la recompensa y el fin del episodio; el agente aprende imaginando.
+- Los errores se acumulan con el horizonte: se imaginan pocos pasos y se vuelve a partir de datos reales.
+- En entornos estocásticos, los modelos con latentes categóricos evitan predecir medias imposibles.
+- La pérdida contrastiva InfoNCE entrena a reconocer el futuro real entre negativos; vale $\log N$ al azar.
+- El Online Decision Transformer y los modelos del mundo son dos formas de combinar transformers con RL.
+</KeyTakeaways>
+
+**Lectura recomendada:** capítulo 7, secciones «World Models in Reinforcement Learning», «A Brave New World: Stochastic Transformer-Based World Model» y «TWISTER».
+
+</Section>
+
+<Section kind="extensions">
+
+1. En `02_planificar.py`, añade ruido al modelo (una $A$ ligeramente distinta de la real) y observa cómo replanificar en cada paso compensa el error.
+2. Sustituye la búsqueda aleatoria por el método de entropía cruzada (CEM): muestrea planes, quédate con el 10 % mejor, ajusta una gaussiana y repite.
+3. En `04_infonce.py`, varía el número de negativos $N$ y la temperatura $\tau$. ¿Cómo cambia la pérdida de un modelo al azar?
+4. Implementa un modelo de mezcla de dos gaussianas en `05_estocastico.py` y compáralo con el categórico.
+
+</Section>

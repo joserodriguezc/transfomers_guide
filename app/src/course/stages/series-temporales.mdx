@@ -1,0 +1,134 @@
+import { quiz } from '../quizzes/series-temporales'
+import componentes from '../snippets/series-temporales/01_componentes.py?raw'
+import acfPacf from '../snippets/series-temporales/02_acf_pacf.py?raw'
+import estacionariedad from '../snippets/series-temporales/03_estacionariedad.py?raw'
+import cointegracion from '../snippets/series-temporales/04_cointegracion.py?raw'
+import cruzada from '../snippets/series-temporales/05_correlacion_cruzada.py?raw'
+import ventanas from '../snippets/series-temporales/06_ventanas.py?raw'
+
+<Section kind="why">
+
+Previsión de demanda eléctrica, inventario de un almacén, tráfico de una web, glucosa de un paciente, precio de una acción: las **series temporales** están en casi cualquier empresa, y los transformers se han convertido en una alternativa seria a ARIMA o a las redes recurrentes gracias a su capacidad de relacionar puntos muy alejados en el tiempo.
+
+Pero una serie temporal no es una frase. Sus valores son **continuos**, sus patrones dependen de la **escala** y de la **frecuencia**, y su estructura estadística (tendencia, estacionalidad, dependencia del pasado) condiciona qué modelo funciona. El error más caro en este campo no es elegir mal el modelo: es **no mirar los datos** antes, o filtrar información del futuro al preparar el dataset. Este módulo reúne lo que hay que entender antes de entrenar nada; el siguiente (<StageRef slug="transformers-series" />) mostrará cómo lo tokenizan los transformers.
+
+</Section>
+
+<Section kind="intuition">
+
+Casi toda serie se puede pensar como la suma de tres cosas: una **tendencia** (hacia dónde va a largo plazo), una **estacionalidad** (lo que se repite cada día, semana o año) y un **residuo** (lo impredecible). La herramienta para ver esa estructura es la **autocorrelación** (ACF): cuánto se parece la serie a sí misma desplazada $k$ pasos.
+
+<Figure title="Componentes de una serie y su autocorrelación" caption="Sube la tendencia: la ACF decae muy despacio (la serie no es estacionaria). Con estacionalidad aparecen picos en múltiplos del periodo (línea naranja). Diferenciar elimina la tendencia; la diferencia estacional, el ciclo.">
+  <SeriesExplorer />
+</Figure>
+
+Muchos métodos (y la mayoría de pruebas estadísticas) suponen que la serie es **estacionaria**: su media, su varianza y su autocorrelación no cambian con el tiempo. Una serie con tendencia no lo es; su **diferencia** ($y_t - y_{t-1}$) a menudo sí.
+
+Al trabajar con varias series aparecen dos relaciones más: la **correlación cruzada** (¿la publicidad de hoy se nota en las ventas de dentro de una semana?) y la **cointegración** (dos series que derivan, pero siempre juntas, como el precio de dos productos sustitutivos). Ojo: dos series con tendencia tienen casi siempre una correlación alta aunque no tengan nada que ver (**correlación espuria**).
+
+</Section>
+
+<Section kind="formal">
+
+Sea $y_1, \dots, y_T$ una serie con media muestral $\bar y$.
+
+<Formula label="Descomposición aditiva" tex="y_t = T_t + S_t + R_t" reading="el valor en el instante t es la tendencia T sub t más la estacionalidad S sub t más el residuo R sub t">
+  Si la amplitud del ciclo crece con el nivel, se usa la versión multiplicativa $y_t = T_t\,S_t\,R_t$, que con logaritmos vuelve a ser aditiva.
+</Formula>
+
+<Formula label="Autocorrelación en el retardo k" tex="\rho_k = \frac{\sum_{t=k+1}^{T} (y_t - \bar y)(y_{t-k} - \bar y)}{\sum_{t=1}^{T} (y_t - \bar y)^2}" reading="rho sub k es la suma de los productos de las desviaciones de y en t y en t menos k, dividida entre la suma de las desviaciones al cuadrado">
+  $\rho_0 = 1$. Con ruido blanco, los $\rho_k$ caen dentro de $\pm 1.96/\sqrt{T}$ el 95 % de las veces: fuera de esa banda, la correlación es significativa.
+</Formula>
+
+<Formula label="Autocorrelación parcial" tex="\phi_{kk} = \text{coeficiente de } y_{t-k} \text{ en la regresión de } y_t \text{ sobre } y_{t-1}, \dots, y_{t-k}" reading="la autocorrelación parcial en el retardo k es el coeficiente de y en t menos k al regresar y en t sobre los k valores anteriores">
+  Mide la relación **directa** con el retardo $k$, descontando los intermedios. En un proceso autorregresivo de orden $p$, la PACF se corta tras el retardo $p$.
+</Formula>
+
+<Formula label="Estacionariedad (débil)" tex="\mathbb{E}[y_t] = \mu,\qquad \operatorname{Var}(y_t) = \sigma^2,\qquad \operatorname{cov}(y_t, y_{t-k}) = \gamma_k\ \ \text{para todo } t" reading="la media, la varianza y la covarianza con cualquier retardo k no dependen del instante t">
+  Aquí $\gamma_k$ es la autocovarianza en el retardo $k$ (no un factor de descuento).
+</Formula>
+
+<Formula label="Diferenciación" tex="\nabla y_t = y_t - y_{t-1},\qquad \nabla_s y_t = y_t - y_{t-s}" reading="la diferencia de y en t es y en t menos y en t menos 1; la diferencia estacional de periodo s es y en t menos y en t menos s" />
+
+<Formula label="Cointegración" tex="x_t,\ y_t \text{ no estacionarias},\qquad y_t - \beta x_t \text{ estacionaria}" reading="x y y no son estacionarias, pero la combinación y menos beta por x sí lo es">
+  Las dos series comparten una tendencia estocástica común; $\beta$ se estima por regresión y se comprueba que el residuo es estable.
+</Formula>
+
+<Formula label="Correlación cruzada" tex="\rho_{xy}(k) = \operatorname{corr}(x_t,\ y_{t+k})" reading="la correlación cruzada en el retardo k es la correlación entre x en el instante t e y en el instante t más k">
+  Un pico en $k \gt 0$ indica que $x$ adelanta a $y$ en $k$ pasos.
+</Formula>
+
+</Section>
+
+<Section kind="example">
+
+<WorkedExample>
+<Problem>
+Calcula $\rho_1$ para la serie $y = (2, 4, 6, 4, 2, 4, 6, 4)$.
+</Problem>
+<Step>
+Media: $\bar y = 32/8 = 4$. Desviaciones: $d = (-2, 0, 2, 0, -2, 0, 2, 0)$.
+</Step>
+<Step>
+Denominador: $\sum d_t^2 = 4 + 0 + 4 + 0 + 4 + 0 + 4 + 0 = 16$.
+</Step>
+<Step>
+Numerador ($k = 1$): $\sum_{t=2}^{8} d_t d_{t-1} = 0\cdot(-2) + 2\cdot0 + 0\cdot2 + (-2)\cdot0 + 0\cdot(-2) + 2\cdot0 + 0\cdot2 = 0$. Así que $\rho_1 = 0$.
+</Step>
+<Step>
+Para $k = 2$: $\sum_{t=3}^{8} d_t d_{t-2} = 2(-2) + 0 + (-2)(2) + 0 + 2(-2) + 0 = -12$, así que $\rho_2 = -12/16 = -0.75$. Y para $k = 4$: $d_5 d_1 + d_7 d_3 = 4 + 4 = 8$, $\rho_4 = 0.5$. La serie tiene periodo 4: a medio ciclo, correlación negativa; a ciclo completo, positiva.
+</Step>
+</WorkedExample>
+
+</Section>
+
+<Section kind="lab">
+
+<PyCell title="Separar tendencia, estacionalidad y residuo" code={componentes} />
+<PyCell title="ACF y PACF desde cero" code={acfPacf} hint="La PACF se corta tras el retardo 2: el proceso es autorregresivo de orden 2." />
+<PyCell title="Estacionariedad y diferenciación" code={estacionariedad} />
+<PyCell title="Cointegración frente a correlación espuria" code={cointegracion} />
+<PyCell title="Correlación cruzada: quién adelanta a quién" code={cruzada} />
+<PyCell title="Ventanas, partición temporal y línea base" code={ventanas} hint="Los estadísticos de escalado se calculan solo con el tramo de entrenamiento." />
+
+</Section>
+
+<Section kind="quiz">
+
+<Quiz questions={quiz} />
+
+</Section>
+
+<Section kind="ml">
+
+**Reglas de oro antes de entrenar un transformer para series:**
+
+- **Parte en el tiempo, nunca al azar.** Entrenar con datos de 2025 y validar con 2024 es filtrar el futuro.
+- **Escala con estadísticos del entrenamiento** (o por ventana, como hacen los modelos fundacionales).
+- **Compara siempre con una línea base ingenua** (repetir el último valor o el del mismo día de la semana anterior). Muchos modelos complejos no la superan.
+- **Conoce la frecuencia y los ciclos**: el tamaño del contexto debe cubrir al menos varios periodos estacionales.
+
+Los dominios de aplicación tienen sus particularidades: en finanzas las series son casi paseos aleatorios (poco predecibles y no estacionarias), en energía o tráfico dominan varios ciclos superpuestos (diario y semanal), y en sensores industriales lo que suele interesar son las **anomalías**.
+
+El notebook opcional [`09_series_temporales.ipynb`](https://github.com/joserodriguezc/transfomers_guide/blob/main/notebooks/09_series_temporales.ipynb) aplica estos análisis (ACF, PACF, prueba de Dickey-Fuller con `statsmodels`) a un dataset real de consumo eléctrico.
+
+<KeyTakeaways>
+- Una serie se descompone en tendencia, estacionalidad y residuo.
+- La ACF mide la similitud de la serie consigo misma desplazada; la PACF, la relación directa con cada retardo.
+- Una serie estacionaria tiene media, varianza y autocorrelación constantes; diferenciar suele conseguirlo.
+- Cointegración: dos series no estacionarias con una combinación estable. Correlación alta entre tendencias no implica relación.
+- Parte en el tiempo, escala con el pasado y compara con una línea base ingenua.
+</KeyTakeaways>
+
+**Lectura recomendada:** capítulo 2, sección «Understanding the Intricacies of Time Series Data».
+
+</Section>
+
+<Section kind="extensions">
+
+1. Descarga una serie real (por ejemplo, de Our World in Data) y calcula su ACF antes y después de diferenciar.
+2. Implementa la prueba de Dickey-Fuller simple: regresa $\nabla y_t$ sobre $y_{t-1}$ y observa el signo y el tamaño del coeficiente para un paseo aleatorio y para ruido blanco.
+3. Simula un proceso MA(1), $y_t = \varepsilon_t + 0.8\,\varepsilon_{t-1}$, y comprueba que su ACF se corta tras el retardo 1.
+4. Construye la línea base estacional ingenua ($\hat y_t = y_{t-s}$) en `06_ventanas.py` y compárala con la ingenua simple.
+
+</Section>

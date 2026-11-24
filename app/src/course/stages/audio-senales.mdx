@@ -1,0 +1,127 @@
+import { quiz } from '../quizzes/audio-senales'
+import nyquist from '../snippets/audio-senales/01_nyquist.py?raw'
+import cuantizacion from '../snippets/audio-senales/02_cuantizacion.py?raw'
+import fft from '../snippets/audio-senales/03_fft.py?raw'
+import stft from '../snippets/audio-senales/04_stft.py?raw'
+import mel from '../snippets/audio-senales/05_mel.py?raw'
+import fase from '../snippets/audio-senales/06_fase.py?raw'
+
+<Section kind="why">
+
+Transcribir reuniones, subtitular vídeos, asistentes de voz, detectar fallos en una máquina por su sonido, generar música: el audio es una de las modalidades donde los transformers han tenido más impacto. Pero un segundo de audio a 16 kHz son **16 000 números**; una canción de 3 minutos a 44.1 kHz, ocho millones. Antes de que un transformer pueda «escuchar», hay que decidir **cómo representar la señal** para que sea compacta y conserve lo importante.
+
+La respuesta casi universal es el **espectrograma log-mel**: una imagen de tiempo × frecuencia en una escala parecida a la del oído humano. Es lo que recibe Whisper, y entender cómo se construye (muestreo, Fourier, ventanas, escala mel) es imprescindible para diagnosticar problemas reales: audio a una frecuencia de muestreo equivocada, saturación, ruido, o por qué un modelo que genera espectrogramas necesita además un **vocoder**.
+
+</Section>
+
+<Section kind="intuition">
+
+**De la onda a los números.** El sonido es una variación de presión en el tiempo. Un micrófono la convierte en voltaje y un conversor la **muestrea** (toma $f_s$ valores por segundo) y la **cuantiza** (redondea cada valor a uno de $2^{bits}$ niveles). Si se muestrea demasiado despacio, las frecuencias altas se «disfrazan» de frecuencias bajas (**aliasing**): el teorema de Nyquist dice que hay que muestrear al menos al doble de la frecuencia más alta que interese.
+
+**Del tiempo a la frecuencia.** La **transformada de Fourier** descompone una señal en senos de distintas frecuencias: dice *qué* notas suenan, pero no *cuándo*. La **STFT** aplica Fourier a tramas cortas (por ejemplo 25 ms) que se desplazan (10 ms): el resultado, el **espectrograma**, es una imagen con el tiempo en horizontal y la frecuencia en vertical.
+
+<Figure title="Onda → espectrograma" caption="Compara un chirp (frecuencia creciente), dos tonos y unos pulsos. Cambia la ventana: larga = líneas finas en frecuencia pero borrosas en tiempo; corta = al revés. La escala mel dedica más resolución a las frecuencias bajas.">
+  <SpectrogramViz />
+</Figure>
+
+**La escala del oído.** Distinguimos muy bien 200 Hz de 300 Hz, pero apenas 8000 Hz de 8100 Hz. La **escala mel** imita esa percepción: es casi lineal hasta 1 kHz y logarítmica por encima. Un banco de filtros triangulares agrupa las frecuencias en, por ejemplo, 80 bandas mel; tomando el logaritmo de su energía (también el oído percibe la intensidad en escala logarítmica) se obtiene el **log-mel**.
+
+**Lo que se pierde: la fase.** El espectrograma guarda la magnitud de cada frecuencia, no su fase. Para *entender* audio no importa; para *generarlo* sí: hay que reconstruir una fase coherente, que es el trabajo de un **vocoder** (HiFi-GAN, BigVGAN) o de un códec neuronal.
+
+</Section>
+
+<Section kind="formal">
+
+<Formula label="Teorema de Nyquist" tex="f_s \gt 2 f_{max}" reading="la frecuencia de muestreo debe ser mayor que el doble de la frecuencia máxima de la señal">
+  $f_s/2$ es la **frecuencia de Nyquist**. Un tono de frecuencia $f$ entre $f_s/2$ y $f_s$ aparece como $f_s - f$. Voz: 16 kHz bastan; música: 44.1 o 48 kHz.
+</Formula>
+
+<Formula label="Ruido de cuantización" tex="\operatorname{SNR}_{dB} \approx 6.02\,b + 1.76" reading="la relación señal ruido en decibelios es aproximadamente seis coma cero dos por el número de bits b más uno coma setenta y seis">
+  Para una sinusoide a plena escala. 16 bits dan unos 98 dB de rango dinámico.
+</Formula>
+
+<Formula label="Transformada discreta de Fourier" tex="X[k] = \sum_{n=0}^{N-1} x[n]\, e^{-2\pi i k n / N},\qquad f_k = \frac{k\, f_s}{N}" reading="la componente k de la transformada es la suma, para n desde 0 hasta N menos 1, de x de n por e elevado a menos dos pi i k n entre N; corresponde a la frecuencia k por f s entre N">
+  $|X[k]|$ es la amplitud y $\arg X[k]$ la fase de la frecuencia $f_k$. La resolución en frecuencia es $\Delta f = f_s/N$. La FFT la calcula en $O(N\log N)$.
+</Formula>
+
+<Formula label="STFT" tex="S[m, k] = \left|\sum_{n=0}^{N-1} x[n + mH]\, w[n]\, e^{-2\pi i k n/N}\right|^2" reading="el espectrograma en la trama m y la frecuencia k es el módulo al cuadrado de la transformada de Fourier de la trama m, que empieza en m por H y está multiplicada por la ventana w">
+  $N$ es la longitud de la ventana, $H$ el salto y $w$ una ventana suave (Hann) que evita discontinuidades en los bordes de la trama. Whisper usa $N = 400$ (25 ms) y $H = 160$ (10 ms) a 16 kHz.
+</Formula>
+
+<Formula label="Escala mel" tex="m = 2595\,\log_{10}\!\left(1 + \frac{f}{700}\right)" reading="los mels son dos mil quinientos noventa y cinco por el logaritmo en base diez de uno más f entre setecientos">
+  1000 Hz ≈ 1000 mel. El log-mel es $\log\big(\sum_k F_{j k}\, S[m, k]\big)$, con $F_{jk}$ el peso del filtro triangular $j$ en la frecuencia $k$.
+</Formula>
+
+</Section>
+
+<Section kind="example">
+
+<WorkedExample>
+<Problem>
+Whisper recibe 30 segundos de audio a 16 kHz con ventanas de 400 muestras y salto de 160. ¿Cuántas muestras, tramas y valores log-mel (80 bandas) hay? ¿Cuál es la resolución en frecuencia de la FFT?
+</Problem>
+<Step>
+Muestras: $30\cdot16\,000 = 480\,000$.
+</Step>
+<Step>
+Tramas: una cada 160 muestras: $480\,000/160 = 3000$ tramas (de 10 ms cada una).
+</Step>
+<Step>
+Log-mel: $3000\times80 = 240\,000$ valores, la mitad de las muestras, pero organizados de forma mucho más útil.
+</Step>
+<Step>
+Resolución: $\Delta f = f_s/N = 16\,000/400 = 40$ Hz, con $N/2 + 1 = 201$ frecuencias entre 0 y 8000 Hz (Nyquist). El banco mel resume esas 201 en 80 bandas.
+</Step>
+</WorkedExample>
+
+</Section>
+
+<Section kind="lab">
+
+<PyCell title="Nyquist y aliasing" code={nyquist} />
+<PyCell title="Profundidad de bits y ruido de cuantización" code={cuantizacion} />
+<PyCell title="Espectro con la FFT" code={fft} />
+<PyCell title="Espectrograma con la STFT" code={stft} />
+<PyCell title="Banco de filtros mel y log-mel" code={mel} />
+<PyCell title="La fase importa para reconstruir" code={fase} />
+
+</Section>
+
+<Section kind="quiz">
+
+<Quiz questions={quiz} />
+
+</Section>
+
+<Section kind="ml">
+
+**Errores clásicos en producción:**
+
+- **Frecuencia de muestreo equivocada.** Pasar audio a 44.1 kHz a un modelo entrenado a 16 kHz sin remuestrear lo «acelera» casi 3 veces. Remuestrea siempre (`librosa.resample`, `torchaudio.functional.resample`).
+- **Saturación (clipping)** y niveles muy bajos: normaliza la amplitud.
+- **Audio estéreo**: la mayoría de modelos esperan mono.
+
+**Aplicaciones por dominio.** Reconocimiento de voz (ASR), identificación de hablante y diarización, clasificación de sonidos y eventos (sirenas, fallos de máquinas), separación de fuentes, síntesis de voz (TTS) y generación de música. En el siguiente módulo (<StageRef slug="audio-transformers" />) veremos cómo los transformers procesan estas representaciones.
+
+El notebook opcional [`15_audio_senales.ipynb`](https://github.com/joserodriguezc/transfomers_guide/blob/main/notebooks/15_audio_senales.ipynb) carga un audio real con `librosa`, calcula su espectrograma log-mel exactamente como Whisper (`WhisperFeatureExtractor`) y lo reconstruye con Griffin-Lim.
+
+<KeyTakeaways>
+- Muestrear a $f_s$ permite representar hasta $f_s/2$ (Nyquist); por encima aparece aliasing.
+- Cada bit de cuantización aporta unos 6 dB de rango dinámico.
+- Fourier dice qué frecuencias hay; la STFT dice cuáles hay en cada instante (espectrograma).
+- Ventanas largas: buena resolución en frecuencia; cortas: buena resolución en tiempo.
+- El log-mel imita la percepción humana y es la entrada estándar de los modelos de voz; para generar audio hace falta recuperar la fase (vocoder).
+</KeyTakeaways>
+
+**Lectura recomendada:** capítulo 6, sección «From Waveforms to Spectrograms: Understanding the Structure of Audio Data».
+
+</Section>
+
+<Section kind="extensions">
+
+1. Graba tu voz (o usa cualquier WAV), remuestréala a 8 kHz y a 16 kHz y compara sus espectrogramas. ¿Qué se pierde?
+2. Implementa Griffin-Lim: alterna entre imponer la magnitud conocida y estimar una fase coherente con la STFT inversa.
+3. Calcula los MFCC (coeficientes cepstrales en frecuencias mel): la transformada del coseno del log-mel.
+4. Construye un detector de silencio con la energía por trama y úsalo para recortar el audio antes de transcribirlo.
+
+</Section>

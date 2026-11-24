@@ -1,0 +1,139 @@
+import { quiz } from '../quizzes/contexto-largo'
+import matriz from '../snippets/contexto-largo/01_rope_matriz.py?raw'
+import aplicar from '../snippets/contexto-largo/02_rope_aplicar.py?raw'
+import interpolacion from '../snippets/contexto-largo/03_interpolacion.py?raw'
+import perplejidad from '../snippets/contexto-largo/04_perplejidad.py?raw'
+import pajar from '../snippets/contexto-largo/05_pajar.py?raw'
+
+<Section kind="why">
+
+El transformer original procesaba como máximo **512 tokens**. Hoy, Qwen3 maneja 32 768 de forma nativa (y más de 128 000 ampliándolo), y Llama 4 anuncia hasta 10 millones. Esa **ventana de contexto** decide si un modelo puede leer un contrato completo, un repositorio de código o el historial de una conversación larga sin trocearlo.
+
+Pero ampliar el contexto no es solo cuestión de memoria. Un modelo entrenado con 2048 posiciones **nunca ha visto la posición 3000**: si se le da, su calidad se desploma. Este módulo explica cómo **RoPE** codifica las posiciones de forma relativa, cómo **PI**, **NTK** y **YaRN** amplían la ventana de un modelo ya entrenado con poco ajuste, y cómo medir si ha funcionado con la **perplejidad**. Y un aviso: incluso con posiciones perfectas, la softmax tiene su propio problema con contextos enormes.
+
+</Section>
+
+<Section kind="intuition">
+
+**RoPE** (*rotary positional embedding*) no suma nada a los embeddings. En su lugar, **gira** las queries y las keys un ángulo proporcional a su posición, justo antes de calcular la atención. Una query en la posición $m$ gira $m\theta$; una key en la posición $n$ gira $n\theta$. Al hacer el producto punto, lo único que sobrevive es la **diferencia** de ángulos: $(n - m)\theta$.
+
+<Figure title="RoPE en 2D" caption="Mueve m y n a la vez manteniendo la misma diferencia: los dos vectores giran, pero el producto punto no cambia. RoPE codifica la posición absoluta y la atención ve la relativa.">
+  <RoPEViz />
+</Figure>
+
+Con $d$ dimensiones hay $d/2$ pares, cada uno girando a una frecuencia distinta (como las agujas de un reloj del <StageRef slug="embeddings-posicion" />). El resultado es que el producto $q\cdot k$ tiende a **decaer con la distancia**: los tokens cercanos pesan más.
+
+<Figure title="Producto q·k con RoPE según la distancia" caption="Con el factor PI = 1, el modelo ve las distancias originales. Con PI = 4, las posiciones se comprimen: una distancia de 400 tokens se ve como una de 100, que el modelo sí conoce.">
+  <RoPEDistance />
+</Figure>
+
+**Ampliar el contexto.** La **interpolación de posiciones (PI)** divide todas las posiciones por un factor $s$: el modelo nunca ve un ángulo mayor que los del entrenamiento. El precio es que los tokens vecinos quedan «más juntos» y se distinguen peor. **NTK-aware** cambia la base de las frecuencias para estirar solo las lentas, y **YaRN** combina una interpolación por tramos de frecuencia con una **temperatura** en la atención.
+
+**El problema del pajar.** Aunque las posiciones sean perfectas, la softmax reparte el peso entre todos los tokens. Con un millón de tokens irrelevantes, uno relevante se diluye:
+
+<Figure title="La aguja en el pajar" caption="El token relevante tiene un logit varias unidades mayor que el resto, pero su peso cae con N. Escalar los logits con log N (como hacen YaRN o Scalable-Softmax) mantiene el foco.">
+  <HaystackSoftmax />
+</Figure>
+
+</Section>
+
+<Section kind="formal">
+
+RoPE divide el vector en $d/2$ pares y gira el par $i$ un ángulo $m\theta_i$:
+
+<Formula label="Frecuencias de RoPE" tex="\theta_i = b^{-2(i-1)/d},\qquad i = 1, \dots, d/2,\qquad b = 10000" reading="theta sub i es la base b elevada a menos dos por i menos uno sobre d, para i desde 1 hasta d medios, con base diez mil" />
+
+<Formula label="Matriz de rotación (d = 6)" tex="R_{\Theta,m} = \begin{bmatrix} \cos m\theta_1 & -\sin m\theta_1 & 0 & 0 & 0 & 0\\ \sin m\theta_1 & \cos m\theta_1 & 0 & 0 & 0 & 0\\ 0 & 0 & \cos m\theta_2 & -\sin m\theta_2 & 0 & 0\\ 0 & 0 & \sin m\theta_2 & \cos m\theta_2 & 0 & 0\\ 0 & 0 & 0 & 0 & \cos m\theta_3 & -\sin m\theta_3\\ 0 & 0 & 0 & 0 & \sin m\theta_3 & \cos m\theta_3 \end{bmatrix}" reading="la matriz de rotación de RoPE para la posición m es diagonal por bloques; cada bloque de dos por dos gira un ángulo m por theta sub i">
+  Es ortogonal ($R^TR = I$): conserva la norma. En la práctica nunca se construye la matriz; se giran los pares directamente con senos y cosenos.
+</Formula>
+
+<Formula label="Atención con RoPE: solo importa la distancia" tex="(R_{\Theta,m} W_q x_m)^T (R_{\Theta,n} W_k x_n) = x_m^T W_q^T\, R_{\Theta,\,n-m}\, W_k x_n" reading="el producto de la query girada en la posición m por la key girada en la posición n es igual a x sub m transpuesta por W sub q transpuesta por la rotación de n menos m por W sub k por x sub n">
+  Porque $R_{\Theta,m}^T R_{\Theta,n} = R_{\Theta,n-m}$. La puntuación depende de la **distancia relativa** $n - m$, aunque cada vector lleve su posición absoluta.
+</Formula>
+
+<Formula label="Interpolación de posiciones (PI)" tex="f'(x, m) = f\!\left(x,\ \frac{m L}{L'}\right),\qquad L' \gt L" reading="la nueva función f prima de x en la posición m es la función original f en la posición m por L dividido entre L prima, siendo L prima la nueva ventana, mayor que L">
+  $L$ es la ventana de entrenamiento y $L'$ la nueva. Las posiciones $[0, L']$ se comprimen a $[0, L]$; basta un ajuste fino corto para que el modelo se adapte.
+</Formula>
+
+<Formula label="Perplejidad" tex="\operatorname{PPL} = \exp\!\left(-\frac{1}{n}\sum_{t=1}^{n}\log p_\theta(x_t \mid x_{\lt t})\right)" reading="la perplejidad es la exponencial de menos la media del logaritmo de la probabilidad que el modelo asigna a cada token correcto">
+  Es la exponencial de la entropía cruzada. Se interpreta como el número de opciones entre las que el modelo «duda» en cada paso: un modelo que reparte uniformemente entre $V$ tokens tiene $\operatorname{PPL} = V$. Menos es mejor.
+</Formula>
+
+<Formula label="Dilución de la softmax" tex="\alpha_{\text{aguja}} = \frac{e^{\Delta}}{e^{\Delta} + (N-1)} \xrightarrow{N\to\infty} 0" reading="el peso de la aguja es e elevado a delta dividido entre e elevado a delta más N menos 1, y tiende a cero cuando N crece">
+  $\Delta$ es la ventaja del logit relevante sobre los $N - 1$ irrelevantes. YaRN introduce una temperatura $t$ que multiplica los logits; Scalable-Softmax hace que el factor crezca con $\log N$.
+</Formula>
+
+</Section>
+
+<Section kind="example">
+
+<WorkedExample>
+<Problem>
+Con $d = 2$ y $\theta = 1$, la query $q = (1, 0)$ está en la posición $m = 1$ y la key $k = (1, 0)$ en la posición $n = 3$. Calcula $q\cdot k$ tras aplicar RoPE y compruébalo con la distancia.
+</Problem>
+<Step>
+Girar $q$ un ángulo $1$: $R_1 q = (\cos 1, \sin 1) \approx (0.540, 0.841)$.
+</Step>
+<Step>
+Girar $k$ un ángulo $3$: $R_3 k = (\cos 3, \sin 3) \approx (-0.990, 0.141)$.
+</Step>
+<Step>
+Producto: $0.540\cdot(-0.990) + 0.841\cdot0.141 \approx -0.535 + 0.119 = -0.416$.
+</Step>
+<Step>
+Con la fórmula relativa: $q^T R_{n-m} k = (1, 0)\cdot(\cos 2, \sin 2) = \cos 2 \approx -0.416$ ✓. Si movemos ambos a $m = 11$, $n = 13$, el resultado sigue siendo $\cos 2$.
+</Step>
+</WorkedExample>
+
+</Section>
+
+<Section kind="lab">
+
+<PyCell title="La matriz de rotación de RoPE" code={matriz} />
+<PyCell title="Aplicar RoPE de forma eficiente" code={aplicar} hint="El producto q·k es idéntico en las tres parejas de posiciones con la misma distancia." />
+<PyCell title="PI frente a NTK: qué ángulos ve cada dimensión" code={interpolacion} />
+<PyCell title="Perplejidad" code={perplejidad} />
+<PyCell title="La aguja en el pajar" code={pajar} />
+
+</Section>
+
+<Section kind="quiz">
+
+<Quiz questions={quiz} />
+
+</Section>
+
+<Section kind="ml">
+
+**Ampliar el contexto en producción.** Los motores de inferencia lo exponen como configuración. Por ejemplo, en vLLM:
+
+```bash
+vllm serve Qwen/Qwen3-8B --rope-scaling '{"rope_type":"yarn","factor":4.0,"original_max_position_embeddings":32768}' --max-model-len 131072
+```
+
+Dos advertencias de despliegue: el *scaling* estático afecta también a los textos cortos (actívalo solo si necesitas el contexto largo) y la memoria de la **KV cache** crece linealmente con la longitud (<StageRef slug="variantes-atencion" />).
+
+**Evaluar.** La perplejidad con ventana deslizante sobre documentos largos y las pruebas de «aguja en el pajar» (esconder un dato en un texto enorme y preguntarlo) son las comprobaciones mínimas antes de prometer una ventana de contexto. En el ejemplo del libro, Falcon-7B da una perplejidad de 5.08 a una frase de Wikipedia sobre Apple y 121 a «A Falcon is a generative transformer model and it can't fly».
+
+El notebook opcional [`07_contexto_largo.ipynb`](https://github.com/joserodriguezc/transfomers_guide/blob/main/notebooks/07_contexto_largo.ipynb) calcula la perplejidad de un modelo pequeño con distintas longitudes de contexto, con y sin escalado de RoPE.
+
+<KeyTakeaways>
+- RoPE gira queries y keys según su posición; el producto $q\cdot k$ solo depende de la distancia $n - m$.
+- Los modelos no generalizan a posiciones mayores que las de entrenamiento: hay que interpolar.
+- PI comprime todas las posiciones; NTK y YaRN tratan distinto las frecuencias altas y bajas, y YaRN añade una temperatura.
+- La perplejidad es la exponencial de la entropía cruzada: menos es mejor.
+- Con contextos enormes, la softmax diluye la información relevante (problema del pajar).
+</KeyTakeaways>
+
+**Lectura recomendada:** capítulo 1, sección «Longer Context Windows with Better Performance» y el recuadro «Softmax and the Haystack Problem».
+
+</Section>
+
+<Section kind="extensions">
+
+1. Implementa YaRN simplificado: interpola solo las dimensiones cuya longitud de onda $2\pi/\theta_i$ supera la ventana $L$ y deja intactas las de alta frecuencia.
+2. Demuestra que $R_{\Theta,m}^T R_{\Theta,n} = R_{\Theta,n-m}$ usando las fórmulas del coseno y el seno de una resta.
+3. Implementa ALiBi (sumar $-c\,|i - j|$ a las puntuaciones) y compara su sesgo hacia la distancia con el decaimiento de RoPE.
+4. Diseña una prueba de «aguja en el pajar» para un modelo pequeño del notebook y mide a partir de qué longitud falla.
+
+</Section>

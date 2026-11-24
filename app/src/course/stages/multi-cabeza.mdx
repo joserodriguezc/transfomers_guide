@@ -1,0 +1,115 @@
+import { quiz } from '../quizzes/multi-cabeza'
+import dividir from '../snippets/multi-cabeza/01_dividir_cabezas.py?raw'
+import mha from '../snippets/multi-cabeza/02_mha.py?raw'
+import parametros from '../snippets/multi-cabeza/03_parametros.py?raw'
+import unaVsVarias from '../snippets/multi-cabeza/04_una_vs_varias.py?raw'
+
+<Section kind="why">
+
+En «la niña que vimos ayer canta», el verbo `canta` necesita a la vez su **sujeto** (`niña`, lejos), el **tiempo** de la oración y quizá el token anterior para la concordancia. Una sola atención produce **una** media ponderada por token: si reparte su peso entre varios objetivos, la información se diluye.
+
+La solución del transformer es ejecutar **varias atenciones en paralelo**, cada una con sus propias proyecciones, y combinarlas. Cada **cabeza** puede especializarse en un tipo de relación. Todos los modelos modernos lo hacen: el transformer original usaba 8 cabezas; Llama 3 8B usa 32. Las variantes que comparten keys y values entre cabezas (MQA y GQA, <StageRef slug="variantes-atencion" />) parten de esta misma estructura.
+
+</Section>
+
+<Section kind="intuition">
+
+Divide el vector de cada token, de dimensión $d_{model}$, en $h$ trozos. Cada cabeza trabaja en su propio **subespacio** de dimensión $d_k = d_{model}/h$: proyecta, calcula su matriz de atención y mezcla sus values. Después se **concatenan** las salidas de todas las cabezas y una última proyección $W_O$ las combina.
+
+<Figure title="Tres cabezas, tres relaciones" caption="Patrones ilustrativos de los que se observan en modelos entrenados: una cabeza que mira al token anterior, una que conecta verbo y sujeto, y una que promedia todo el contexto.">
+  <MultiHeadPatterns />
+</Figure>
+
+Lo sorprendente es que **no cuesta más**: repartir $d_{model}$ entre $h$ cabezas mantiene el mismo número de parámetros y casi el mismo coste. Solo cambia cómo se organiza el cálculo.
+
+<Figure title="Dimensiones de la atención multi-cabeza" caption="Mueve d_model y h. El número de parámetros es siempre 4·d_model² (más los sesgos), sea cual sea h.">
+  <MultiHeadShapes />
+</Figure>
+
+</Section>
+
+<Section kind="formal">
+
+Para cada cabeza $i = 1, \dots, h$ hay tres matrices de proyección propias:
+
+<Formula label="Una cabeza" tex="\operatorname{head}_i = \operatorname{Attention}(X W_Q^{(i)},\ X W_K^{(i)},\ X W_V^{(i)})" reading="la cabeza i es la atención aplicada a X por W sub Q de la cabeza i, X por W sub K de la cabeza i y X por W sub V de la cabeza i">
+  $W_Q^{(i)}, W_K^{(i)}, W_V^{(i)} \in \mathbb{R}^{d_{model}\times d_k}$ (matrices de números reales), con $d_k = d_{model}/h$. Cada cabeza produce una matriz $n \times d_k$.
+</Formula>
+
+<Formula label="Atención multi-cabeza" tex="\operatorname{MHA}(X) = \operatorname{Concat}(\operatorname{head}_1, \dots, \operatorname{head}_h)\, W_O" reading="la atención multi-cabeza de X es la concatenación de las h cabezas multiplicada por la matriz de salida W sub O">
+  La concatenación tiene forma $n \times h\,d_k = n\times d_{model}$, y $W_O \in \mathbb{R}^{d_{model}\times d_{model}}$ (matriz de números reales) mezcla la información de todas las cabezas.
+</Formula>
+
+<Formula label="Parámetros" tex="\underbrace{3\,h\,d_{model}\,d_k}_{Q,\,K,\,V} + \underbrace{d_{model}^2}_{W_O} = 4\,d_{model}^2" reading="los parámetros son tres por h por d model por d k para las proyecciones más d model al cuadrado para la salida, en total cuatro por d model al cuadrado">
+  Como $h\,d_k = d_{model}$, el número de cabezas no cambia el total. En la práctica, las tres proyecciones de todas las cabezas se guardan juntas como una sola matriz $d_{model}\times 3d_{model}$ y se separan con un `reshape`.
+</Formula>
+
+<Formula label="Separar las cabezas" tex="(n,\ d_{model}) \xrightarrow{\text{reshape}} (n,\ h,\ d_k) \xrightarrow{\text{transpose}} (h,\ n,\ d_k)" reading="una matriz de n por d model se reorganiza en n por h por d k y se transpone a h por n por d k, para calcular todas las cabezas a la vez" />
+
+</Section>
+
+<Section kind="example">
+
+<WorkedExample>
+<Problem>
+Un modelo tiene $d_{model} = 768$ y $h = 12$ cabezas (como BERT-base). Para una secuencia de $n = 128$ tokens, calcula $d_k$, la forma de cada tensor y los parámetros de la capa (sin sesgos).
+</Problem>
+<Step>
+$d_k = 768 / 12 = 64$.
+</Step>
+<Step>
+$Q, K, V$ tras separar cabezas: $(12,\ 128,\ 64)$. Las puntuaciones $QK^T$: $(12,\ 128,\ 128)$, una matriz de atención por cabeza.
+</Step>
+<Step>
+Salida de las cabezas: $(12,\ 128,\ 64)$ → concatenar → $(128,\ 768)$ → por $W_O$ → $(128,\ 768)$. La forma de salida es la de entrada.
+</Step>
+<Step>
+Parámetros: $4 \cdot 768^2 = 4 \cdot 589\,824 = 2\,359\,296 \approx 2.36$ millones por capa. BERT-base tiene 12 capas: unos 28 millones solo en atención.
+</Step>
+</WorkedExample>
+
+</Section>
+
+<Section kind="lab">
+
+<PyCell title="Separar y juntar cabezas con reshape" code={dividir} />
+<PyCell title="Atención multi-cabeza completa" code={mha} hint="Cambia h a 1, 2, 8 o 16 (debe dividir a 16) y observa las formas." />
+<PyCell title="Los parámetros no dependen de h" code={parametros} />
+<PyCell title="Por qué varias cabezas y no una" code={unaVsVarias} />
+
+</Section>
+
+<Section kind="quiz">
+
+<Quiz questions={quiz} />
+
+</Section>
+
+<Section kind="ml">
+
+**Las cabezas se especializan.** En modelos entrenados se encuentran cabezas de «token anterior», cabezas que siguen dependencias sintácticas y las llamadas **cabezas de inducción**, que copian patrones (si antes vio «A B» y ahora ve «A», predice «B»): se cree que son una de las bases del aprendizaje en contexto.
+
+**Muchas cabezas sobran.** Al podar cabezas de modelos entrenados, a menudo se pueden quitar más de la mitad con poca pérdida. Esa redundancia es la que aprovechan MQA y GQA (<StageRef slug="variantes-atencion" />) al compartir keys y values entre cabezas para ahorrar memoria al generar.
+
+El notebook opcional [`04_multi_cabeza.ipynb`](https://github.com/joserodriguezc/transfomers_guide/blob/main/notebooks/04_multi_cabeza.ipynb) visualiza las 12 cabezas de una capa de BERT y busca cabezas de inducción en GPT-2.
+
+<KeyTakeaways>
+- La atención multi-cabeza ejecuta $h$ atenciones en paralelo, cada una en un subespacio de dimensión $d_k = d_{model}/h$.
+- Las salidas se concatenan y se combinan con $W_O$; la forma de salida es igual a la de entrada.
+- El número de parámetros, $4d_{model}^2$, no depende de $h$.
+- Separar cabezas es solo un `reshape` y un `transpose`.
+- Distintas cabezas capturan relaciones distintas y muchas son redundantes.
+</KeyTakeaways>
+
+**Lectura recomendada:** capítulo 1, sección «Multi-head attention».
+
+</Section>
+
+<Section kind="extensions">
+
+1. Implementa MHA con una sola matriz $W_{QKV}$ de forma $d_{model}\times 3d_{model}$ y comprueba que da el mismo resultado que tres matrices separadas.
+2. Calcula cuánta memoria ocupan las matrices de atención $(h, n, n)$ en FP16 para $h = 32$ y $n = 8192$. ¿Por qué FlashAttention evita guardarlas?
+3. En `02_mha.py`, anula una cabeza (pon a cero su salida antes de concatenar) y mide cuánto cambia la salida final.
+4. Investiga qué es una «cabeza de inducción» y diseña a mano una matriz de atención que la imite.
+
+</Section>

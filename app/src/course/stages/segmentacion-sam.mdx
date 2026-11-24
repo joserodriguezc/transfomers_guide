@@ -1,0 +1,125 @@
+import { quiz } from '../quizzes/segmentacion-sam'
+import prompts from '../snippets/segmentacion-sam/01_codificar_prompts.py?raw'
+import decodificar from '../snippets/segmentacion-sam/02_decodificar_mascara.py?raw'
+import multimascara from '../snippets/segmentacion-sam/03_multimascara.py?raw'
+import memoria from '../snippets/segmentacion-sam/04_memoria_video.py?raw'
+import conceptos from '../snippets/segmentacion-sam/05_conceptos.py?raw'
+
+<Section kind="why">
+
+Etiquetar una imagen para segmentación (dibujar el contorno exacto de cada objeto) cuesta minutos por imagen y es la razón por la que tantos proyectos de visión se quedan sin datos. **Segment Anything (SAM)** cambió eso: un modelo que, a partir de un **clic** o una **caja**, devuelve la máscara del objeto en milisegundos, para objetos de cualquier tipo, sin reentrenar. Se usa para acelerar el etiquetado, para medir tejados en imágenes de satélite, para segmentar órganos en imagen médica tras un ajuste fino corto o como herramienta dentro de un agente (<StageRef slug="sistemas-inteligentes" />).
+
+La familia ha evolucionado en tres pasos: **SAM** (imágenes con prompts de puntos y cajas), **SAM 2** (vídeo, con memoria entre fotogramas) y **SAM 3** (prompts de **concepto**: «todas las tazas amarillas»). Es un buen ejemplo de diseño de sistema: un encoder pesado que se ejecuta una vez y un decodificador ligero que responde a cada interacción.
+
+</Section>
+
+<Section kind="intuition">
+
+SAM tiene tres piezas:
+
+1. Un **encoder de imagen** (un ViT grande, <StageRef slug="vision-transformers" />) que convierte la imagen en un mapa de embeddings. Es lo caro, y se calcula **una sola vez** por imagen.
+2. Un **codificador de prompts**: los puntos y las cajas se convierten en tokens con una codificación posicional (más un embedding que dice si es un clic positivo, negativo o una esquina de caja); las máscaras previas se suman como un mapa denso.
+3. Un **decodificador de máscaras** ligero: unos pocos bloques de atención en los que los tokens del prompt y unos **tokens de salida** atienden a la imagen y la imagen a ellos (atención en dos sentidos). Cada token de salida se multiplica por el mapa de embeddings ampliado: el resultado, píxel a píxel, es la máscara.
+
+Un clic es **ambiguo**: ¿la puerta, la casa o toda la escena? Por eso SAM devuelve **tres máscaras** (parte, objeto, todo) y una estimación de la calidad (IoU) de cada una.
+
+<Figure title="Un clic como prompt" caption="Haz clic en la imagen. Con «Tres hipótesis», compara las máscaras de parte, objeto y todo y su IoU con el objeto «casa».">
+  <SAMPrompt />
+</Figure>
+
+**SAM 2** añade un **banco de memoria**: las características de los fotogramas ya segmentados (y los prompts del usuario) se guardan, y el fotograma nuevo **atiende a la memoria** para encontrar el mismo objeto. Si el objeto se tapa, un indicador de oclusión evita inventarse una máscara. **SAM 3** acepta **frases nominales** o imágenes de ejemplo: un detector al estilo DETR busca **todas** las instancias del concepto, y un **token de presencia** decide primero si el concepto aparece en la imagen.
+
+</Section>
+
+<Section kind="formal">
+
+<Formula label="Arquitectura de SAM" tex="M = \operatorname{Dec}\big(\operatorname{Enc}_{img}(I),\ \operatorname{Enc}_{prompt}(P)\big)" reading="la máscara M es el decodificador aplicado al embedding de la imagen y al embedding de los prompts">
+  $\operatorname{Enc}_{img}(I)$ se calcula una vez (con un ViT de unos 600 millones de parámetros, en el SAM original) y se reutiliza para todos los prompts sobre esa imagen.
+</Formula>
+
+<Formula label="Codificación posicional de un punto" tex="\gamma(p) = \big[\cos(2\pi B p),\ \sin(2\pi B p)\big],\qquad B \sim \mathcal{N}(0, \sigma^2)" reading="la codificación del punto p es la concatenación del coseno y el seno de dos pi por B por p, donde B es una matriz gaussiana aleatoria fija">
+  Son **características de Fourier aleatorias**: puntos cercanos tienen codificaciones parecidas. Una caja se codifica como dos tokens (sus esquinas).
+</Formula>
+
+<Formula label="Máscara a partir de un token de salida" tex="M_{ij} = \sigma\big(\langle t_{out},\ F_{ij}\rangle\big)" reading="la máscara en el píxel i j es la sigmoide del producto punto entre el token de salida y el vector de características de ese píxel">
+  $F$ es el mapa de embeddings de la imagen ampliado a mayor resolución y $t_{out}$ un token de salida tras pasar por la MLP del decodificador.
+</Formula>
+
+<Formula label="IoU y Dice" tex="\operatorname{IoU}(A, B) = \frac{|A \cap B|}{|A \cup B|},\qquad \operatorname{Dice}(A, B) = \frac{2|A \cap B|}{|A| + |B|}" reading="el IoU es el tamaño de la intersección dividido entre el de la unión; el Dice es dos veces la intersección dividido entre la suma de los tamaños">
+  Ambos valen 1 si las máscaras coinciden. Están relacionados: $\operatorname{Dice} = 2\operatorname{IoU}/(1 + \operatorname{IoU})$.
+</Formula>
+
+<Formula label="Pérdida de entrenamiento de SAM" tex="\mathcal{L} = 20\,\mathcal{L}_{focal} + \mathcal{L}_{Dice} + \mathcal{L}_{MSE}(\widehat{\operatorname{IoU}}, \operatorname{IoU})" reading="la pérdida es veinte veces la pérdida focal más la pérdida Dice más el error cuadrático entre el IoU predicho y el real">
+  Con varias máscaras candidatas, solo se retropropaga la de menor pérdida. El último término enseña al modelo a **estimar su propia calidad**.
+</Formula>
+
+</Section>
+
+<Section kind="example">
+
+<WorkedExample>
+<Problem>
+Un objeto ocupa 400 píxeles. La máscara predicha tiene 350 píxeles, de los cuales 300 están dentro del objeto. Calcula el IoU y el Dice.
+</Problem>
+<Step>
+Intersección: $|A \cap B| = 300$.
+</Step>
+<Step>
+Unión: $|A \cup B| = |A| + |B| - |A \cap B| = 400 + 350 - 300 = 450$. $\operatorname{IoU} = 300/450 \approx 0.667$.
+</Step>
+<Step>
+$\operatorname{Dice} = 2\cdot300/(400 + 350) = 600/750 = 0.8$.
+</Step>
+<Step>
+Comprobación con la relación: $2\cdot0.667/(1 + 0.667) = 1.333/1.667 = 0.8$ ✓. El Dice siempre es mayor o igual que el IoU: no compares un IoU de un modelo con el Dice de otro.
+</Step>
+</WorkedExample>
+
+</Section>
+
+<Section kind="lab">
+
+<PyCell title="Codificar puntos y cajas como tokens" code={prompts} />
+<PyCell title="Del token de salida a la máscara" code={decodificar} hint="Cambia la posición del clic a (15, 18): la máscara pasa a la región 2." />
+<PyCell title="Tres hipótesis y el IoU predicho" code={multimascara} />
+<PyCell title="Propagar una máscara en vídeo con memoria" code={memoria} />
+<PyCell title="Prompts de concepto y token de presencia (SAM 3)" code={conceptos} />
+
+</Section>
+
+<Section kind="quiz">
+
+<Quiz questions={quiz} />
+
+</Section>
+
+<Section kind="ml">
+
+**Ajuste fino eficiente.** Para un dominio concreto (por ejemplo, tejados o lesiones en ecografías), lo habitual es **congelar** el encoder de imagen y el de prompts y entrenar solo el decodificador de máscaras, que es pequeño. Se puede precalcular el embedding de cada imagen una vez y entrenar muy rápido. Las pérdidas típicas son Dice + entropía cruzada (`monai.losses.DiceCELoss`).
+
+**En producción**, la división encoder/decoder permite una arquitectura cliente-servidor: el servidor calcula el embedding y el navegador ejecuta el decodificador en cada clic. Herramientas de etiquetado como Label Studio integran SAM para preetiquetar.
+
+**SAM 2 y SAM 3 en vídeo** permiten seguir objetos con un solo clic en el primer fotograma, o encontrar y seguir todas las instancias de un concepto («jugador con camiseta roja»). SAM 3 añade además ejemplos visuales positivos y negativos para corregir detecciones.
+
+El notebook opcional [`12_segment_anything.ipynb`](https://github.com/joserodriguezc/transfomers_guide/blob/main/notebooks/12_segment_anything.ipynb) segmenta una imagen con SAM desde `transformers` (`SamModel`, `SamProcessor`) usando un punto y una caja, y muestra las tres máscaras con su IoU predicho.
+
+<KeyTakeaways>
+- SAM = encoder de imagen pesado (una vez por imagen) + codificador de prompts + decodificador ligero (una vez por clic).
+- Los puntos y cajas se codifican con características de Fourier; la máscara sale del producto entre un token de salida y el mapa de la imagen.
+- Un prompt es ambiguo: SAM propone varias máscaras y estima su calidad.
+- SAM 2 segmenta vídeo con un banco de memoria; SAM 3 entiende conceptos y encuentra todas sus instancias.
+- IoU y Dice miden solapamiento; Dice $\ge$ IoU.
+</KeyTakeaways>
+
+**Lectura recomendada:** capítulo 3, secciones «Segment Anything», «Segment Anything in Images and Videos» y «Segment Videos and Images with Concept Prompts».
+
+</Section>
+
+<Section kind="extensions">
+
+1. Añade a `02_decodificar_mascara.py` un segundo clic **negativo** que reste su embedding al token y observa cómo cambia la máscara.
+2. Implementa la fórmula de la pérdida de SAM con varias máscaras candidatas: calcula la pérdida de cada una y retropropaga solo la mínima.
+3. En `04_memoria_video.py`, haz que el objeto desaparezca dos fotogramas (oclusión). ¿Qué pasa con la memoria? Diseña un umbral de «objeto ausente».
+4. Busca cuántas máscaras contiene SA-1B y cuántos vídeos SA-V, y piensa por qué el «motor de datos» (el modelo ayudando a etiquetar) fue clave.
+
+</Section>

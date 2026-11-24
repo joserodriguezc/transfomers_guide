@@ -1,0 +1,121 @@
+import { quiz } from '../quizzes/optimizacion'
+import ruler from '../snippets/optimizacion/01_ruler.py?raw'
+import numerica from '../snippets/optimizacion/02_recompensa_numerica.py?raw'
+import adaptthink from '../snippets/optimizacion/03_adaptthink.py?raw'
+import muon from '../snippets/optimizacion/04_muon.py?raw'
+import pesos from '../snippets/optimizacion/05_sincronizar_pesos.py?raw'
+
+<Section kind="why">
+
+Un agente que funciona en la demo suele fallar en producción de formas previsibles: usa mal una herramienta, piensa demasiado en preguntas triviales, o se queda anticuado cuando cambia el entorno. La respuesta de los equipos que construyen agentes punteros no es solo «un prompt mejor», sino **entrenar el comportamiento**: aprendizaje por refuerzo sobre tareas reales del agente, recompensas que no requieren etiquetar a mano y sistemas capaces de actualizar los pesos de modelos de cientos de miles de millones de parámetros sin parar el servicio.
+
+Este módulo recorre esa cadena de optimización: **RL para agentes** con recompensas relativas (ART y RULER), **cómputo adaptativo** para pensar solo cuando hace falta (AdaptThink), el optimizador **Muon** con el que se entrenó Kimi K2, y la **ingeniería de sistemas** que cierra el ciclo entre entrenar y servir (Checkpoint Engine).
+
+</Section>
+
+<Section kind="intuition">
+
+**Recompensas relativas con un juez.** Para tareas sin respuesta comprobable (redactar un informe, gestionar un correo), escribir una función de recompensa es difícil, y pedir a un LLM juez una nota absoluta («7 sobre 10») es ruidoso. **RULER** cambia la pregunta: se generan varias trayectorias para la misma tarea y el juez las **compara entre sí** con una rúbrica general. Como GRPO (<StageRef slug="razonamiento" />) solo necesita saber qué respuestas del grupo son mejores que la media, una ordenación fiable basta. **ART** es el marco que organiza el bucle: ejecutar *rollouts* del agente (con sus herramientas), puntuarlos y actualizar el modelo.
+
+<Figure title="Ventajas relativas al grupo" caption="Elige el modo «Ventajas GRPO» y pulsa sobre las respuestas para cambiar su recompensa. Solo importa la posición relativa dentro del grupo; si todas son iguales, no hay señal.">
+  <TestTimeScaling />
+</Figure>
+
+**Pensar solo cuando compensa.** Un modelo de razonamiento que escribe 1500 tokens para responder «¿cuánto es 2 + 2?» desperdicia dinero y latencia, y a veces hasta empeora la respuesta (*overthinking*). **AdaptThink** entrena al modelo a elegir entre un modo con razonamiento y otro directo: la recompensa le exige no bajar de la precisión de un modelo de referencia y le da un **bono δ** por responder sin pensar. Así aprende a reservar el razonamiento para los problemas difíciles.
+
+**Muon: actualizar en todas las direcciones.** Los gradientes de las matrices de pesos suelen estar dominados por unas pocas direcciones (valores singulares muy grandes). Muon **ortogonaliza** la actualización: conserva sus direcciones pero iguala sus magnitudes, de modo que las direcciones «débiles» también aprenden. Lo hace con unas pocas multiplicaciones de matrices (iteración de Newton–Schulz), sin la costosa SVD.
+
+<Figure title="Ortogonalización de Newton–Schulz" caption="La elipse es la imagen del círculo unidad por la actualización. Con más iteraciones se acerca a un círculo y X·Xᵀ a la identidad.">
+  <MuonViz />
+</Figure>
+
+**Cerrar el ciclo.** En el RL de LLMs, unos motores de inferencia generan trayectorias y un entrenador actualiza los pesos, que hay que **redistribuir** a todos los motores en segundos. Checkpoint Engine lo hace en GPU, en paralelo y solapando la copia desde memoria con la difusión entre máquinas.
+
+</Section>
+
+<Section kind="formal">
+
+<Formula label="Ventaja con RULER" tex="s_i = J(\tau_i \mid \tau_1, \dots, \tau_G,\ \text{rúbrica}),\qquad A_i = \frac{s_i - \operatorname{mean}(s)}{\operatorname{std}(s)}" reading="la puntuación s sub i es la que el juez J asigna a la trayectoria i viéndola junto a todas las del grupo y la rúbrica; la ventaja es esa puntuación normalizada dentro del grupo">
+  Las ventajas alimentan el objetivo de GRPO. El juez puede ser un LLM distinto del que se entrena.
+</Formula>
+
+<Formula label="Recompensa de AdaptThink" tex="R(x, y) = \mathbb{I}[y \text{ correcta}] - \bar R_{ref}(x) + \delta\cdot\mathbb{I}[y \text{ sin razonamiento}]" reading="la recompensa es uno si la respuesta es correcta, menos la precisión media del modelo de referencia en ese problema, más delta si la respuesta no usó razonamiento">
+  $\mathbb{I}$ es la función indicadora (1 si se cumple, 0 si no). Con $\delta$ pequeño (≈ 0.02) el modelo sigue pensando casi siempre; hacia 0.05 suele estar el mejor equilibrio; por encima de 0.075 sacrifica precisión en problemas difíciles.
+</Formula>
+
+<Formula label="Actualización de Muon" tex="M_t = \beta M_{t-1} + G_t,\qquad W_t = W_{t-1} - \eta\, \operatorname{NS}_5(M_t)" reading="el momento M sub t es beta por el momento anterior más el gradiente; los pesos se actualizan restando eta por la ortogonalización de Newton-Schulz de cinco pasos del momento">
+  $\operatorname{NS}_5(M) \approx UV^T$ si $M = U\Sigma V^T$: misma dirección, todos los valores singulares cerca de 1. Se aplica a matrices 2D ocultas; embeddings y normas se optimizan con AdamW.
+</Formula>
+
+<Formula label="Iteración de Newton–Schulz" tex="X_0 = \frac{G}{\|G\|_F},\qquad X_{k+1} = a X_k + \big(b\,X_kX_k^T + c\,(X_kX_k^T)^2\big)X_k" reading="se empieza con G normalizada por su norma de Frobenius y en cada paso X se reemplaza por a por X más b por X X transpuesta más c por X X transpuesta al cuadrado, todo por X">
+  Con $(a, b, c) = (3.4445, -4.7750, 2.0315)$ la iteración empuja rápidamente todos los valores singulares hacia el intervalo $[0.7, 1.2]$ aproximadamente. Kimi K2 añade *QK-Clip* (MuonClip) para que los logits de atención no exploten.
+</Formula>
+
+</Section>
+
+<Section kind="example">
+
+<WorkedExample>
+<Problem>
+AdaptThink con $\delta = 0.05$. En un problema, el modelo de referencia acierta el 90 %. Con razonamiento, el modelo acierta el 92 %; sin razonamiento, el 80 %. ¿Qué modo prefiere la recompensa esperada? ¿Y si sin razonamiento acertara el 88 %?
+</Problem>
+<Step>
+Con razonamiento: $0.92 - 0.90 = 0.02$.
+</Step>
+<Step>
+Sin razonamiento: $0.80 - 0.90 + 0.05 = -0.05$. Gana pensar: el problema es difícil y responder directo cuesta demasiada precisión.
+</Step>
+<Step>
+Si sin razonamiento acertara el 88 %: $0.88 - 0.90 + 0.05 = 0.03 \gt 0.02$. Gana responder directamente, con 2 puntos menos de precisión pero quizá 20 veces menos tokens.
+</Step>
+<Step>
+$\delta$ es el «precio» que se está dispuesto a pagar en precisión por la eficiencia: el modo directo gana cuando la pérdida de precisión es menor que $\delta$.
+</Step>
+</WorkedExample>
+
+</Section>
+
+<Section kind="lab">
+
+<PyCell title="RULER: puntuación relativa de trayectorias" code={ruler} />
+<PyCell title="Una recompensa numérica verificable para un agente" code={numerica} />
+<PyCell title="AdaptThink: cuándo pensar según δ" code={adaptthink} />
+<PyCell title="Muon y la iteración de Newton–Schulz" code={muon} />
+<PyCell title="Redistribuir pesos tras cada actualización" code={pesos} />
+
+</Section>
+
+<Section kind="quiz">
+
+<Quiz questions={quiz} />
+
+</Section>
+
+<Section kind="ml">
+
+**El ecosistema de RL abierto.** En el libro, ART + RULER entrenan un agente de LangGraph para calcular medias móviles de precios bursátiles, con una recompensa numérica determinista que puede sustituirse por RULER en tareas abiertas. **rLLM** organiza el ciclo completo para agentes (registro de datasets, motor de ejecución de agentes, entrenamiento) y se combina con **verl** para entrenar con GRPO a escala; con esa receta se entrenaron agentes de código como DeepCoder.
+
+**Consejos prácticos.** Empieza con la rúbrica por defecto de RULER y pon las instrucciones específicas en el prompt del agente (el juez las ve como parte de la trayectoria). Mide siempre precisión **y** longitud de respuesta al entrenar razonamiento. Y registra cada *rollout* (Weights & Biases, Langfuse): depurar RL sin trazas es imposible.
+
+El notebook opcional [`21_optimizacion.ipynb`](https://github.com/joserodriguezc/transfomers_guide/blob/main/notebooks/21_optimizacion.ipynb) entrena una red pequeña con Muon y con AdamW y compara las curvas de pérdida, y muestra el esqueleto de un bucle ART con RULER.
+
+<KeyTakeaways>
+- RL para agentes: generar varios *rollouts* por tarea, puntuarlos y actualizar con GRPO.
+- RULER usa un LLM juez que compara trayectorias entre sí; la puntuación relativa es más estable que la absoluta.
+- AdaptThink enseña a pensar solo cuando compensa; δ controla el equilibrio entre coste y precisión.
+- Muon ortogonaliza la actualización con Newton–Schulz para que todas las direcciones aprendan.
+- Checkpoint Engine redistribuye los pesos entre entrenamiento e inferencia en segundos.
+</KeyTakeaways>
+
+**Lectura recomendada:** capítulo 10 completo; para Muon, capítulo 8, sección «Muon: Scaling Optimization for the Agentic Era».
+
+</Section>
+
+<Section kind="extensions">
+
+1. En `01_ruler.py`, añade ruido a las puntuaciones del juez y mide con qué frecuencia cambia el orden de las trayectorias. ¿Cuánto ruido tolera GRPO?
+2. En `03_adaptthink.py`, representa la precisión y los tokens medios frente a δ y localiza el «codo».
+3. Compara en `04_muon.py` 1, 3, 5 y 10 iteraciones de Newton–Schulz: ¿cuándo deja de mejorar el parecido con $UV^T$?
+4. Diseña la rúbrica que usarías con RULER para un agente de atención al cliente de tu sector.
+
+</Section>

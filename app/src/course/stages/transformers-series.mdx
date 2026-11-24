@@ -1,0 +1,131 @@
+import { quiz } from '../quizzes/transformers-series'
+import chronos from '../snippets/transformers-series/01_chronos.py?raw'
+import patchtst from '../snippets/transformers-series/02_patchtst.py?raw'
+import timesfm from '../snippets/transformers-series/03_timesfm.py?raw'
+import probabilistico from '../snippets/transformers-series/04_probabilistico.py?raw'
+import metricas from '../snippets/transformers-series/05_metricas.py?raw'
+import anomalias from '../snippets/transformers-series/06_anomalias.py?raw'
+
+<Section kind="why">
+
+Hasta hace poco, para pronosticar la demanda de 10 000 productos había que entrenar (y mantener) un modelo por serie o por familia. Los **modelos fundacionales de series temporales** —Chronos (Amazon), TimesFM (Google), Moirai, Lag-Llama— cambian el planteamiento: un único transformer preentrenado con miles de millones de puntos de dominios muy distintos pronostica series que **nunca ha visto** (*zero-shot*), y con un ajuste fino corto se acerca al estado del arte.
+
+La pregunta técnica central es la del <StageRef slug="tokenizacion" />, ahora con números: **¿qué es un token en una serie temporal?** Un valor continuo no está en ningún vocabulario. Este módulo presenta las tres respuestas principales —**cuantizar** (Chronos), **agrupar en parches** (PatchTST, TimesFM)— y cómo se usa la misma maquinaria para **detectar anomalías** sin etiquetas (AnomalyBERT).
+
+</Section>
+
+<Section kind="intuition">
+
+**Chronos: la serie como un idioma.** Si los LLM funcionan con un vocabulario finito, convirtamos la serie en uno: primero se **escala** dividiendo por la media de los valores absolutos (así una serie de ventas en miles y otra en millones se parecen), y después se **cuantiza** en unas 4000 cubetas uniformes. Cada cubeta es un token. Un T5 normal se entrena con entropía cruzada para predecir el siguiente token, y al pronosticar se **muestrean** muchas trayectorias: el resultado es una distribución, no un número.
+
+**PatchTST: un token, muchos puntos.** Un valor aislado dice poco (¿es alto o bajo?); un tramo de 16 valores ya muestra una forma local. PatchTST agrupa puntos consecutivos en **parches** que se proyectan linealmente a un embedding. Con parches de 16 y paso 8, una serie de 512 puntos pasa a 63 tokens: la atención cuesta 66 veces menos y el modelo puede mirar mucho más atrás. Además trata cada variable de una serie multivariante **por separado** (independencia de canal) con los mismos pesos.
+
+<Figure title="Tokenizar una serie: parches o cubetas" caption="En modo PatchTST, cada banda de color es un token; cambia la longitud y el paso. En modo Chronos, la línea discontinua es la serie reconstruida desde los IDs de las cubetas.">
+  <SeriesTokenizer />
+</Figure>
+
+**TimesFM: un GPT para series.** Usa parches como PatchTST pero en un **decoder-only** con atención causal, como un LLM. Su detalle clave: los parches de **salida** son más largos que los de entrada (por ejemplo 128 frente a 32), así que pronostica horizontes largos en pocos pasos autorregresivos. En el entrenamiento oculta al azar el principio del contexto para que el modelo funcione con cualquier longitud de historia.
+
+**AnomalyBERT: aprender lo anómalo sin etiquetas.** Las anomalías reales son raras y casi nunca están etiquetadas. AnomalyBERT **fabrica** anomalías: toma ventanas normales, sustituye un tramo (por ruido, por otro tramo mezclado, por un pico o por un valor constante) y entrena un transformer a señalar qué puntos fueron alterados. Con contexto largo detecta anomalías **contextuales** que un umbral local no ve.
+
+</Section>
+
+<Section kind="formal">
+
+Sea la serie $x_{1:C+H}$: $C$ pasos de contexto y $H$ de horizonte.
+
+<Formula label="Escalado por la media (Chronos)" tex="s = \frac{1}{C}\sum_{t=1}^{C} |x_t|,\qquad \tilde x_t = \frac{x_t}{s}" reading="la escala s es la media de los valores absolutos del contexto, y la serie escalada x tilde en t es x en t dividido entre s" />
+
+<Formula label="Cuantización" tex="z_t = q(\tilde x_t) = j \iff b_{j-1} \le \tilde x_t \lt b_j,\qquad j = 1, \dots, B" reading="el token z en t es la cubeta j cuyos bordes b sub j menos 1 y b sub j contienen al valor escalado">
+  Con $B$ cubetas uniformes en un rango como $[-15, 15]$. Para volver a números se toma el centro de la cubeta y se multiplica por $s$.
+</Formula>
+
+<Formula label="Pérdida de Chronos" tex="\ell(\theta) = -\sum_{h=1}^{H+1}\sum_{i=1}^{|V_{ts}|} \mathbb{I}(z_{C+h} = i)\,\log p_\theta(z_{C+h} = i \mid z_{1:C+h-1})" reading="la pérdida es menos la suma sobre el horizonte y sobre el vocabulario de series del indicador de que el token correcto es i por el logaritmo de la probabilidad que el modelo asigna a i">
+  $\mathbb{I}$ es la función indicadora (1 si se cumple la condición, 0 si no). Es la entropía cruzada de un modelo de lenguaje; $V_{ts}$ es el vocabulario de tokens de series (incluido el de fin de secuencia, por eso $H + 1$).
+</Formula>
+
+<Formula label="Número de parches (PatchTST)" tex="N = \left\lfloor \frac{L - P}{S} \right\rfloor + 1" reading="el número de parches es la parte entera de L menos P entre S, más uno">
+  $L$ es la longitud de la serie, $P$ la del parche y $S$ el paso. TimesFM usa parches sin solape ($S = P$): $N = \lfloor L/P \rfloor$.
+</Formula>
+
+<Formula label="Token de entrada de TimesFM" tex="t_j = \operatorname{ResBlock}\!\big(\tilde y_j \odot (1 - \tilde m_j)\big) + PE_j" reading="el token j es un bloque residual aplicado al parche j con los valores enmascarados puestos a cero, más la codificación posicional j">
+  $\tilde y_j$ es el parche $j$ y $\tilde m_j$ su máscara (1 = oculto). La salida de cada token se convierte en un parche de pronóstico de longitud $h \ge p$ con otro bloque residual.
+</Formula>
+
+<Formula label="Pérdida cuantil (pinball)" tex="\rho_\tau(y, \hat q) = \max\!\big(\tau\,(y - \hat q),\ (\tau - 1)(y - \hat q)\big)" reading="la pérdida pinball de nivel tau es el máximo entre tau por el error y tau menos uno por el error">
+  Penaliza asimétricamente: para $\tau = 0.9$, quedarse corto cuesta 9 veces más que pasarse. Promediada sobre varios $\tau$ evalúa un pronóstico probabilístico.
+</Formula>
+
+<Formula label="MASE" tex="\operatorname{MASE} = \frac{\frac{1}{H}\sum_{h=1}^{H} |y_{C+h} - \hat y_{C+h}|}{\frac{1}{C-1}\sum_{t=2}^{C}|y_t - y_{t-1}|}" reading="el MASE es el error absoluto medio del pronóstico dividido entre el error absoluto medio del pronóstico ingenuo dentro del contexto">
+  Menor que 1: mejor que repetir el último valor. No depende de la escala, así que permite comparar series distintas.
+</Formula>
+
+</Section>
+
+<Section kind="example">
+
+<WorkedExample>
+<Problem>
+Contexto: $x = (4, -2, 6, 4)$. Tokeniza al estilo Chronos con 6 cubetas uniformes en $[-3, 3]$ y decuantiza.
+</Problem>
+<Step>
+Escala: $s = (4 + 2 + 6 + 4)/4 = 4$. Serie escalada: $\tilde x = (1,\ -0.5,\ 1.5,\ 1)$.
+</Step>
+<Step>
+Bordes de las cubetas (anchura 1): $-3, -2, -1, 0, 1, 2, 3$. Las cubetas son $[-3,-2), [-2,-1), [-1,0), [0,1), [1,2), [2,3)$, numeradas de 1 a 6.
+</Step>
+<Step>
+Tokens: $1 \in [1, 2) \to 5$; $-0.5 \in [-1, 0) \to 3$; $1.5 \to 5$; $1 \to 5$. Secuencia: $(5, 3, 5, 5)$.
+</Step>
+<Step>
+Decuantizar: centros $1.5, -0.5, 1.5, 1.5$ por $s = 4$: $(6, -2, 6, 6)$. Los valores 4 y 6 acaban en el mismo token: con solo 6 cubetas el error es grande; con 4094, despreciable.
+</Step>
+</WorkedExample>
+
+</Section>
+
+<Section kind="lab">
+
+<PyCell title="Tokenizar como Chronos" code={chronos} />
+<PyCell title="PatchTST: parches e independencia de canal" code={patchtst} />
+<PyCell title="TimesFM: parches de salida largos y enmascaramiento" code={timesfm} />
+<PyCell title="Pronóstico probabilístico y pérdida pinball" code={probabilistico} hint="Con 200 trayectorias, el intervalo 10–90 % debería cubrir el valor real ~80 % de las veces." />
+<PyCell title="MAE, sMAPE y MASE" code={metricas} />
+<PyCell title="Anomalías sintéticas al estilo AnomalyBERT" code={anomalias} />
+
+</Section>
+
+<Section kind="quiz">
+
+<Quiz questions={quiz} />
+
+</Section>
+
+<Section kind="ml">
+
+**Usarlos en la práctica.** Chronos se carga con `ChronosPipeline.from_pretrained("amazon/chronos-t5-small")` y `pipeline.predict(context, prediction_length)` devuelve muestras de trayectorias. PatchTST está en `transformers` (`PatchTSTForPrediction`) y TimesFM tiene paquete propio con *checkpoints* en Hugging Face. El ajuste fino suele requerir pocos datos y épocas: en el libro, PatchTST con parches de 8 sobre precios diarios de IBM alcanza un MSE de prueba de 0.048 para un horizonte de 10 días.
+
+**Cuándo merece la pena.** Con muchas series cortas y heterogéneas, o sin histórico para una serie nueva (arranque en frío), un modelo fundacional en modo *zero-shot* es difícil de batir. Con una sola serie larga y muy estable, un modelo estadístico bien ajustado puede ser igual de bueno y mucho más barato. Mide siempre el MASE frente a la línea base ingenua.
+
+El notebook opcional [`10_transformers_series.ipynb`](https://github.com/joserodriguezc/transfomers_guide/blob/main/notebooks/10_transformers_series.ipynb) pronostica con Chronos-T5-small en modo zero-shot y ajusta un PatchTST pequeño.
+
+<KeyTakeaways>
+- Chronos escala por la media y cuantiza en cubetas: la serie se vuelve un texto que un T5 normal aprende con entropía cruzada.
+- PatchTST agrupa puntos en parches: menos tokens, más contexto, semántica local; procesa cada canal por separado.
+- TimesFM es un decoder-only con parches de salida más largos que los de entrada para pronosticar horizontes largos en pocos pasos.
+- Los pronósticos probabilísticos se evalúan con cuantiles y pérdida pinball; el MASE compara con la línea base ingenua.
+- AnomalyBERT entrena con anomalías sintéticas y detecta anomalías contextuales.
+</KeyTakeaways>
+
+**Lectura recomendada:** capítulo 2, secciones «Tokenizing Time Series Data», «Chronos», «PatchTST», «TimesFM» y «AnomalyBERT for Self-Supervised Anomaly Detection».
+
+</Section>
+
+<Section kind="extensions">
+
+1. Cambia el número de cubetas en `01_chronos.py` a 64, 256 y 4094 y representa el error de cuantización frente al número de cubetas.
+2. En `02_patchtst.py`, compara cuántos tokens y cuánto coste de atención supone pasar de $P = 16, S = 8$ a $P = 64, S = 64$. ¿Qué se pierde?
+3. Implementa el escalado «media + desviación» en lugar del de Chronos y razona qué pasa con una serie con valores negativos y positivos.
+4. Entrena un clasificador sencillo (regresión logística sobre ventanas) con las anomalías sintéticas de `06_anomalias.py` y compáralo con el detector de la mediana.
+
+</Section>

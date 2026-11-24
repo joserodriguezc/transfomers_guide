@@ -1,0 +1,67 @@
+[project]
+name = "transformers-guide-course"
+version = "0.1.0"
+description = "Curso interactivo de Transformers: de los primeros principios a la visión, el audio, el razonamiento y los agentes (herramientas Python del proyecto)"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "matplotlib>=3.10",
+    "numpy>=2.2",
+    "pandas>=2.2",
+    "scikit-learn>=1.6",
+    "scipy>=1.15",
+]
+
+[project.scripts]
+dev = "tools.dev:main"
+check-snippets = "tools.snippets:main"
+build-notebooks = "tools.build_notebooks:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["tools"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+extend-exclude = ["notebooks"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "ruff>=0.9",
+]
+# Notebooks opcionales con modelos reales: uv sync --group notebooks
+notebooks = [
+    "accelerate>=1.2",
+    "bitsandbytes>=0.45; sys_platform != 'darwin'",
+    "chronos-forecasting>=1.5",
+    "datasets>=3.2",
+    "diffusers>=0.32",
+    "gymnasium>=1.0",
+    "ipykernel>=6.29",
+    "jiwer>=3.0",
+    "jupyterlab>=4.3",
+    "librosa>=0.10",
+    "nbconvert>=7.16",
+    "openai>=1.60",
+    "peft>=0.14",
+    "pillow>=11.0",
+    "requests>=2.32",
+    "sentencepiece>=0.2",
+    "soundfile>=0.13",
+    "statsmodels>=0.14",
+    "torch>=2.5",
+    "transformers>=4.51",
+    "trl>=0.17",
+]
+
+[tool.ruff.lint]
+# zip(s, s[1:]) es más explícito que itertools.pairwise en el código didáctico de BPE
+ignore = ["RUF007"]

@@ -1,0 +1,128 @@
+import { quiz } from '../quizzes/dit-video'
+import patchify from '../snippets/dit-video/01_patchify.py?raw'
+import adaln from '../snippets/dit-video/02_adaln_zero.py?raw'
+import latente from '../snippets/dit-video/03_espacio_latente.py?raw'
+import kvComp from '../snippets/dit-video/04_kv_compresion.py?raw'
+import video from '../snippets/dit-video/05_atencion_video.py?raw'
+
+<Section kind="why">
+
+Durante años, la red que quita el ruido en los modelos de difusión (<StageRef slug="difusion" />) fue una **U-Net** convolucional. En 2023, **DiT** (*Diffusion Transformer*) mostró que un transformer sobre parches del espacio latente escala mejor: más cómputo da, de forma predecible, mejores imágenes. Desde entonces, Stable Diffusion 3, Flux, PixArt, Sora, Veo, LTX-Video o HunyuanVideo son transformers de difusión.
+
+Con el vídeo el problema se multiplica: 5 segundos a 24 fotogramas por segundo y 720p son más de **100 millones de píxeles**. Ningún transformer puede atender a eso directamente. Este módulo explica las tres ideas que lo hacen posible: **comprimir** a un espacio latente, **condicionar** cada bloque con adaLN y **organizar la atención** espacio-temporal para que el coste no explote.
+
+</Section>
+
+<Section kind="intuition">
+
+**1. Difundir en un espacio latente.** Un autoencoder variacional (VAE) comprime la imagen (o el vídeo) a un **latente** mucho más pequeño que conserva lo perceptualmente importante; la difusión ocurre ahí y al final el decodificador vuelve a píxeles. Una imagen de $256\times256\times3$ pasa a $32\times32\times4$; con un VAE de vídeo 3D se comprime también el tiempo.
+
+**2. Parches como tokens (DiT).** Igual que ViT (<StageRef slug="vision-transformers" />), el latente se corta en parches de $p\times p$ que se proyectan a tokens. El transformer predice el ruido de cada parche y se «despatchifica» para recuperar la forma del latente. Parches más pequeños: más tokens, más cómputo y mejor calidad.
+
+<Figure title="Cuántos tokens procesa un transformer de difusión" caption="Cambia la resolución, la reducción del VAE, el parche y el número de fotogramas. Observa cuánto ahorra la compresión espacial y temporal antes de la atención.">
+  <LatentTokens />
+</Figure>
+
+**3. Condicionar con adaLN.** El paso $t$ y la condición (clase o texto) no se añaden como tokens: **modulan** cada bloque. Una pequeña red produce, a partir de la condición, un desplazamiento y una escala para la normalización, y una **compuerta** para la salida del bloque. Con la inicialización *adaLN-Zero*, la compuerta empieza en cero y cada bloque empieza siendo la identidad, lo que estabiliza el entrenamiento. Para texto largo, PixArt añade **cross-attention** a los embeddings de un codificador T5.
+
+**4. Vídeo.** Hay dos estrategias de atención: **completa** sobre todos los tokens de espacio y tiempo (máxima calidad, coste enorme, viable solo con compresiones agresivas como la 1:192 de LTX-Video) o **factorizada**: atención espacial dentro de cada fotograma alternada con atención temporal en cada posición (Latte, Tora).
+
+</Section>
+
+<Section kind="formal">
+
+<Formula label="Número de tokens de DiT" tex="T = \left(\frac{I}{p}\right)^2" reading="el número de tokens es I entre p, al cuadrado">
+  $I$ es el lado del latente y $p$ el del parche. Con $I = 32$: $p = 2 \Rightarrow T = 256$, $p = 8 \Rightarrow T = 16$. Reducir $p$ a la mitad cuadruplica los tokens (y los Gflops).
+</Formula>
+
+<Formula label="Bloque DiT con adaLN-Zero" tex="h = x + g_1 \odot \operatorname{Attn}\big(\operatorname{LN}(x)\odot(1 + s_1) + b_1\big),\qquad y = h + g_2 \odot \operatorname{MLP}\big(\operatorname{LN}(h)\odot(1 + s_2) + b_2\big)" reading="h es x más la compuerta g sub 1 por la atención de la normalización de x escalada por uno más s sub 1 y desplazada por b sub 1; y es h más g sub 2 por la MLP de la normalización de h modulada por s sub 2 y b sub 2">
+  $(b_1, s_1, g_1, b_2, s_2, g_2) = \operatorname{MLP}(c)$ salen de la condición $c$ (embedding de $t$ más clase). Con *Zero*, la capa que produce $g_1, g_2$ se inicializa a cero: al principio $y = x$.
+</Formula>
+
+<Formula label="adaLN-single (PixArt-α)" tex="(b, s, g)^{(l)} = \operatorname{MLP}(t) + E^{(l)}" reading="los parámetros de modulación de la capa l son una única MLP aplicada al paso t, compartida por todas las capas, más un embedding propio de la capa l">
+  Una sola MLP global en lugar de una por bloque ahorra muchos parámetros; el texto entra por cross-attention en lugar de por la modulación.
+</Formula>
+
+<Formula label="Compresión de keys y values (PixArt-Σ)" tex="\operatorname{Attn}\big(Q,\ \operatorname{Pool}_{f}(K),\ \operatorname{Pool}_{f}(V)\big),\qquad N \times N \to N \times \frac{N}{f^2}" reading="la atención usa todas las queries, pero keys y values agrupados por bloques de f por f, de modo que el coste pasa de N por N a N por N entre f al cuadrado">
+  Los tokens vecinos de una imagen son muy redundantes: promediarlos en las keys y values apenas cambia el resultado y permite generar en 4K.
+</Formula>
+
+<Formula label="Atención de vídeo: completa frente a factorizada" tex="O\big((F S)^2\big)\quad\text{frente a}\quad O\big(F S^2 + S F^2\big)" reading="la atención completa cuesta del orden de F por S al cuadrado; la factorizada, del orden de F por S al cuadrado más S por F al cuadrado">
+  $F$ es el número de fotogramas (latentes) y $S$ los tokens por fotograma. La factorizada pierde algunas interacciones directas entre posiciones distintas en instantes distintos.
+</Formula>
+
+</Section>
+
+<Section kind="example">
+
+<WorkedExample>
+<Problem>
+Vídeo de $704\times512$ píxeles y 48 fotogramas. Calcula los tokens con (a) un VAE de imagen ($\times8$ espacial) y parches $p = 2$, y (b) el VAE de LTX-Video ($\times32$ espacial, $\times8$ temporal) con $p = 1$.
+</Problem>
+<Step>
+(a) Latente por fotograma: $(704/8)\times(512/8) = 88\times64$. Con $p = 2$: $44\times32 = 1408$ tokens por fotograma.
+</Step>
+<Step>
+48 fotogramas sin compresión temporal: $1408\cdot48 = 67\,584$ tokens. Atención completa: $\approx 4.6\cdot10^9$ pares por cabeza y capa: inviable.
+</Step>
+<Step>
+(b) LTX: $(704/32)\times(512/32) = 22\times16 = 352$ tokens por latente temporal, y $48/8 = 6$ latentes temporales: $352\cdot6 = 2112$ tokens.
+</Step>
+<Step>
+Atención completa: $2112^2 \approx 4.5\cdot10^6$ pares, unas 1000 veces menos. A cambio, cada token resume $32\times32\times8$ píxeles: por eso el decodificador de LTX-Video también hace el último paso de eliminación de ruido para recuperar el detalle fino.
+</Step>
+</WorkedExample>
+
+</Section>
+
+<Section kind="lab">
+
+<PyCell title="Patchify y unpatchify del latente" code={patchify} />
+<PyCell title="adaLN-Zero: modulación por la condición" code={adaln} />
+<PyCell title="Tokens con y sin espacio latente" code={latente} />
+<PyCell title="Compresión de keys y values (PixArt-Σ)" code={kvComp} />
+<PyCell title="Atención de vídeo completa frente a factorizada" code={video} />
+
+</Section>
+
+<Section kind="quiz">
+
+<Quiz questions={quiz} />
+
+</Section>
+
+<Section kind="ml">
+
+**Panorama de modelos** (capítulos 4 y 5 del libro):
+
+- **DiT**: transformer sobre parches latentes con adaLN-Zero; demostró que los Gflops predicen la calidad (FID).
+- **PixArt-α**: entrenamiento por fases (dependencias de píxeles, alineación texto-imagen, estética), cross-attention a T5 y adaLN-single; calidad alta con una fracción del coste de entrenamiento.
+- **PixArt-Σ**: entrenamiento «de débil a fuerte» desde PixArt-α y compresión de keys/values para 4K.
+- **LTX-Video**: VAE de vídeo muy agresivo (1:192) y atención espacio-temporal completa; genera vídeo en tiempo casi real.
+- **Latte**: estudia cuatro formas de factorizar la atención espacio-temporal.
+- **Tora**: añade control de **trayectorias** de movimiento mediante latentes de movimiento.
+
+**Generar vídeo desde una imagen** con `diffusers` es tan simple como pasar la imagen como condición del primer fotograma, un prompt, `num_frames`, `num_inference_steps` y `guidance_scale`. El coste está en la GPU: incluso con latentes comprimidos, vídeo de calidad requiere decenas de GB de memoria.
+
+El notebook opcional [`14_dit_video.ipynb`](https://github.com/joserodriguezc/transfomers_guide/blob/main/notebooks/14_dit_video.ipynb) genera imágenes con DiT (`facebook/DiT-XL-2-256`) y PixArt-Σ, y un clip corto con LTX-Video (requiere GPU).
+
+<KeyTakeaways>
+- Los transformers de difusión trabajan sobre parches de un latente comprimido por un VAE.
+- El número de tokens es $(I/p)^2$ por fotograma: parche y compresión deciden el coste.
+- adaLN modula cada bloque con el paso y la condición; adaLN-Zero empieza con bloques identidad.
+- PixArt usa cross-attention a texto, adaLN-single y compresión de keys/values.
+- En vídeo, la atención completa exige compresión extrema; la factorizada alterna espacio y tiempo.
+</KeyTakeaways>
+
+**Lectura recomendada:** capítulo 4, secciones «Scalable Diffusion Models with Transformers», «PIXART-α» y «PixArt-Σ»; capítulo 5 completo («Transformers for Video Generation»).
+
+</Section>
+
+<Section kind="extensions">
+
+1. Calcula los tokens y los pares de atención para generar 10 segundos de vídeo 1080p a 24 fps con el VAE de LTX-Video.
+2. Implementa en `05_atencion_video.py` una máscara causal temporal (cada fotograma solo ve los anteriores). ¿Para qué serviría al generar vídeos largos?
+3. Modifica `02_adaln_zero.py` para tener las seis salidas de DiT (tres para la atención y tres para la MLP).
+4. Compara en `04_kv_compresion.py` el error con datos sin estructura espacial (ruido puro). ¿Por qué la compresión funciona en imágenes y no en ruido?
+
+</Section>

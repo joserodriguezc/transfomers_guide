@@ -1,0 +1,137 @@
+import { quiz } from '../quizzes/despliegue'
+import memoria from '../snippets/despliegue/01_memoria.py?raw'
+import cuantizar from '../snippets/despliegue/02_cuantizar.py?raw'
+import lora from '../snippets/despliegue/03_lora.py?raw'
+import latencia from '../snippets/despliegue/04_latencia.py?raw'
+import coste from '../snippets/despliegue/05_coste.py?raw'
+import percentiles from '../snippets/despliegue/06_percentiles.py?raw'
+
+<Section kind="why">
+
+La diferencia entre un modelo que impresiona en un notebook y uno que sobrevive en producción está en los detalles: ¿cabe en la GPU con 50 usuarios a la vez?, ¿cuánto tarda el primer token?, ¿cuánto cuesta cada millón de tokens?, ¿qué pasa en el percentil 99 de latencia?, ¿está la red interna del clúster expuesta?
+
+Este módulo reúne las decisiones de despliegue que atraviesan todo el curso: **abierto o cerrado**, qué arquitectura se despliega (y por qué un decoder se comporta tan distinto de un encoder), **ingeniería del tiempo de ejecución** (KV cache, batching continuo, caché de prefijos), **cuantización**, **adaptación eficiente con LoRA**, **evaluación** en producción con las métricas correctas y **coste**. Son decisiones de ingeniería con números, y aquí se calculan.
+
+</Section>
+
+<Section kind="intuition">
+
+**Abierto o cerrado.** Una API cerrada da el mejor modelo sin operar nada, pero con dependencia del proveedor, datos que salen de casa y coste por token. Un modelo abierto autoalojado da control, privacidad y coste predecible a gran escala, a cambio de operar GPUs. Muchas empresas combinan ambos.
+
+**Cada arquitectura, un perfil de ejecución.** Un **encoder** (clasificación, embeddings) procesa la entrada de una vez: latencia predecible, fácil de agrupar en lotes. Un **decoder** genera token a token y guarda una KV cache que crece con cada token y cada usuario (<StageRef slug="variantes-atencion" />). En un decoder hay dos fases: el **prefill** (procesar el prompt entero en paralelo, limitado por cálculo: decide el tiempo hasta el primer token, TTFT) y el **decode** (un token por paso, limitado por **leer los pesos de memoria**: decide la latencia entre tokens).
+
+**Por qué agrupar ayuda tanto.** En cada paso de decode hay que leer todos los pesos de la memoria de la GPU, sirvan a 1 usuario o a 64. Agrupando peticiones (**batching continuo**), esa lectura se reparte y el rendimiento total se multiplica casi gratis... hasta que la KV cache llena la memoria.
+
+**Cuantizar.** Guardar los pesos en 8 o 4 bits en lugar de 16 reduce memoria y acelera el decode (se leen menos bytes). El enemigo son los **valores atípicos**: una sola escala por tensor los acomoda a costa de aplastar al resto. Por eso se cuantiza **por grupos** con escalas propias (GPTQ, AWQ, GGUF).
+
+<Figure title="Cuantización con un valor atípico" caption="Baja los bits y sube el atípico: con una escala por tensor casi todos los pesos caen en el nivel 0. Por bloques de 16, el daño queda confinado al bloque del atípico.">
+  <QuantizationViz />
+</Figure>
+
+**Adaptar sin reentrenar todo.** **LoRA** congela los pesos y aprende una corrección de **bajo rango** $BA$ por matriz: un 0.1–1 % de los parámetros. Con QLoRA, el modelo base se guarda en 4 bits mientras se entrenan los adaptadores.
+
+<Figure title="LoRA" caption="Cambia d y el rango r: la fracción de parámetros entrenables es 2r/d.">
+  <LoRAViz />
+</Figure>
+
+<Figure title="¿API o GPU propia?" caption="La GPU propia solo compensa con utilización alta y sostenida.">
+  <CostCompare />
+</Figure>
+
+</Section>
+
+<Section kind="formal">
+
+<Formula label="Memoria para servir un decoder" tex="M \approx \underbrace{N_{params}\cdot b_w}_{\text{pesos}} + \underbrace{2\,L\,g\,d_{head}\,T\,B\,b_{kv}}_{\text{KV cache}} + \text{activaciones}" reading="la memoria es aproximadamente los parámetros por los bytes por peso, más la KV cache, más las activaciones">
+  $b_w$ y $b_{kv}$ son los bytes por valor de pesos y caché; el resto como en <StageRef slug="variantes-atencion" bare />. Deja un margen del 10–20 %.
+</Formula>
+
+<Formula label="Límite del decode por memoria" tex="\text{tokens/s por secuencia} \lesssim \frac{\text{ancho de banda}}{N_{params}\cdot b_w}" reading="los tokens por segundo de cada secuencia están acotados por el ancho de banda de memoria dividido entre los bytes de los pesos">
+  8 mil millones de parámetros en FP16 son 16 GB; con 2 TB/s, unos 125 tokens/s por secuencia. En INT4, cuatro veces más. Agrupar $B$ secuencias multiplica el total casi por $B$ mientras no se llegue al límite de cálculo.
+</Formula>
+
+<Formula label="Cuantización simétrica" tex="s = \frac{\max_i |w_i|}{2^{b-1} - 1},\qquad q_i = \operatorname{round}\!\left(\frac{w_i}{s}\right),\qquad \hat w_i = s\,q_i" reading="la escala s es el máximo valor absoluto dividido entre dos elevado a b menos uno, menos uno; cada peso se divide por s y se redondea; para recuperarlo se multiplica por s">
+  El error por peso es como mucho $s/2$. Con grupos de $g$ pesos, cada grupo tiene su $s$: coste extra de $16/g$ bits por peso.
+</Formula>
+
+<Formula label="LoRA" tex="W' = W + \frac{\alpha}{r}\,B A,\qquad B \in \mathbb{R}^{d\times r},\ A \in \mathbb{R}^{r\times k}" reading="los pesos adaptados son W más alfa entre r por B por A, con B de d por r y A de r por k números reales">
+  $r \ll \min(d, k)$. Parámetros entrenables: $r(d + k)$ frente a $dk$. $B$ empieza en cero, así que el modelo adaptado empieza siendo el original; tras entrenar, $BA$ se puede **fusionar** con $W$ y la inferencia no cuesta nada más.
+</Formula>
+
+<Formula label="Coste por 1000 tokens autoalojado" tex="c_{1k} = 1000 \cdot \frac{C_{\$/h}}{T_{tokens/s}\cdot 3600 \cdot u}" reading="el coste por mil tokens es mil por el precio por hora de la GPU dividido entre los tokens por segundo por 3600 por la utilización u">
+  $T$ es el rendimiento medido en una prueba de carga y $u$ la fracción del tiempo que la GPU está ocupada de verdad.
+</Formula>
+
+</Section>
+
+<Section kind="example">
+
+<WorkedExample>
+<Problem>
+Quieres servir un modelo de 70 mil millones de parámetros (80 capas, 8 cabezas KV de 128) a 16 usuarios con 8192 tokens de contexto, en GPUs de 80 GB. ¿Cuántas GPUs necesitas en FP16 y en INT4 (la KV cache en FP16)?
+</Problem>
+<Step>
+KV cache: $2\cdot80\cdot8\cdot128\cdot8192\cdot16\cdot2$ bytes $\approx 42.9$ GB.
+</Step>
+<Step>
+FP16: pesos $70\cdot10^9\cdot2 = 140$ GB. Total $\approx 183$ GB; con un 10 % de margen, $\approx 201$ GB: **3 GPUs**.
+</Step>
+<Step>
+INT4: pesos $70\cdot10^9\cdot0.5 = 35$ GB. Total $\approx 78$ GB; con margen, $\approx 86$ GB: **2 GPUs** (no cabe en una por poco).
+</Step>
+<Step>
+Cuantizar ahorra una GPU y además acelera el decode (se leen 4 veces menos bytes de pesos por token). Si la calidad en INT4 no basta, FP8 es el punto intermedio habitual. Y fíjate: con INT4, la KV cache pesa ya más que los pesos.
+</Step>
+</WorkedExample>
+
+</Section>
+
+<Section kind="lab">
+
+<PyCell title="¿Cabe el modelo? Pesos y KV cache" code={memoria} />
+<PyCell title="Cuantización por tensor y por grupos" code={cuantizar} />
+<PyCell title="LoRA: adaptar entrenando un 1 %" code={lora} />
+<PyCell title="Prefill, decode y tamaño de lote" code={latencia} hint="Sube el lote hasta que el cálculo, y no la memoria, limite el paso." />
+<PyCell title="Coste por 1000 tokens" code={coste} />
+<PyCell title="Latencia media frente a percentiles" code={percentiles} />
+
+</Section>
+
+<Section kind="quiz">
+
+<Quiz questions={quiz} />
+
+</Section>
+
+<Section kind="ml">
+
+**Ingeniería del tiempo de ejecución** (vLLM, SGLang, TGI): KV cache paginada, **caché de prefijos** (reutilizar el prefill de un mensaje de sistema compartido), **prefill por trozos** (que un prompt enorme no bloquee a los demás), **batching continuo** (programar prefill y decode juntos) y decodificación especulativa. Aumentar el lote parece gratis hasta que la KV cache se queda sin memoria y las peticiones empiezan a encolarse.
+
+**Evaluar el despliegue.** Mide TTFT, latencia entre tokens, latencia de extremo a extremo y tokens por segundo, con pruebas de carga que suban la concurrencia hasta encontrar el punto de saturación. Optimiza el **p95/p99**, no la media: la experiencia del usuario la definen las colas. En el ejemplo del libro, el nivel «fast» de una API cuesta el doble por token pero da 2.7 veces más rendimiento por petición.
+
+**Seguridad.** Los servidores de inferencia distribuida (comunicaciones de PyTorch Distributed, transferencia de KV cache) no cifran ni autentican por defecto: red privada con cortafuegos, IPs explícitas en lugar de `0.0.0.0`, solo el puerto de la API expuesto, dominios de medios restringidos para evitar SSRF y mínimo privilegio. Y para modelos que leen contenido externo, defensas frente a *prompt injection*.
+
+**Adaptación en test.** TT-LoRA ajusta adaptadores LoRA en el momento de la inferencia en modelos visión-lenguaje, para adaptarse a cada entrada sin reentrenar el modelo.
+
+El notebook opcional [`22_despliegue.ipynb`](https://github.com/joserodriguezc/transfomers_guide/blob/main/notebooks/22_despliegue.ipynb) carga un modelo en 4 bits con `bitsandbytes`, mide su perplejidad frente a FP16, entrena un adaptador LoRA con `peft` y lanza una prueba de carga contra un servidor compatible con la API de OpenAI.
+
+<KeyTakeaways>
+- Memoria de servicio = pesos + KV cache (+ activaciones); la KV cache crece con contexto y usuarios.
+- El prefill está limitado por cálculo (TTFT); el decode, por ancho de banda de memoria: agrupar peticiones multiplica el rendimiento.
+- Cuantizar a 8 o 4 bits reduce memoria y acelera el decode; los atípicos exigen escalas por grupos.
+- LoRA entrena una corrección de bajo rango; se fusiona sin coste de inferencia; QLoRA combina LoRA y 4 bits.
+- Evalúa con p95/p99, calcula el coste por 1000 tokens y aísla la red interna del clúster.
+</KeyTakeaways>
+
+**Lectura recomendada:** capítulo 11 completo («Deploying Transformer Models»).
+
+</Section>
+
+<Section kind="extensions">
+
+1. Calcula cuántos usuarios simultáneos con 32 000 tokens caben en una GPU de 80 GB con un modelo de 8 mil millones en INT4 y KV cache en FP8.
+2. Implementa en `02_cuantizar.py` la cuantización **asimétrica** (con punto cero) y compárala con la simétrica en pesos que no estén centrados en 0.
+3. Aplica LoRA solo a $W_Q$ y $W_V$ de las 32 capas de un modelo con $d = 4096$ y $r = 16$. ¿Cuántos parámetros entrenas?
+4. Diseña una prueba de carga: qué concurrencias probarías, qué métricas registrarías y qué SLO fijarías para un chat interno.
+
+</Section>

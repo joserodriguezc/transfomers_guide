@@ -1,0 +1,129 @@
+import { quiz } from '../quizzes/bloque-transformer'
+import normalizaciones from '../snippets/bloque-transformer/01_normalizaciones.py?raw'
+import ffn from '../snippets/bloque-transformer/02_ffn.py?raw'
+import bloque from '../snippets/bloque-transformer/03_bloque.py?raw'
+import contar from '../snippets/bloque-transformer/04_contar_parametros.py?raw'
+import residual from '../snippets/bloque-transformer/05_residual.py?raw'
+
+<Section kind="why">
+
+La atención multi-cabeza (<StageRef slug="multi-cabeza" />) mezcla información **entre** tokens, pero es casi lineal: por sí sola no puede aprender funciones complejas. Un transformer real apila decenas de **bloques** idénticos, y cada bloque combina la atención con otras tres piezas que parecen detalles pero sin las cuales el modelo no entrena:
+
+- una **red feed-forward** (FFN) por posición, que es donde están **dos tercios de los parámetros** de un LLM;
+- **conexiones residuales**, que permiten apilar 32, 80 o 120 bloques sin que la señal se pierda;
+- **normalizaciones** (LayerNorm o RMSNorm), que mantienen las activaciones en una escala estable.
+
+Cuando un entrenamiento «explota» (la pérdida se dispara a infinito), el culpable suele estar en cómo se combinan estas piezas. Entenderlas es entender el 100 % de la arquitectura de un modelo como Llama, Qwen o Mistral.
+
+</Section>
+
+<Section kind="intuition">
+
+Imagina el **flujo residual** como una autopista que recorre todo el modelo. Cada bloque lee una copia del estado actual, calcula una **corrección** y la **suma** a la autopista. Nadie reescribe el estado: solo se le añaden cosas. Por eso la información (y los gradientes) pueden viajar del primer bloque al último sin degradarse.
+
+<Figure title="Recorrido por un bloque pre-norm" caption="Avanza paso a paso. La línea gris es el flujo residual; cada subcapa trabaja sobre una copia normalizada y su resultado se suma.">
+  <ResidualStream />
+</Figure>
+
+La **normalización** reescala cada vector de token para que sus componentes tengan un tamaño controlado. LayerNorm centra y escala; RMSNorm, más barata, solo escala. Los modelos actuales usan RMSNorm.
+
+<Figure title="LayerNorm frente a RMSNorm" caption="Mueve las componentes del vector de entrada. Suma la misma cantidad a todas: LayerNorm no cambia (resta la media), RMSNorm sí.">
+  <NormCompare />
+</Figure>
+
+La **FFN** se aplica a cada token por separado, con los mismos pesos: expande el vector a unas 4 veces su tamaño, aplica una no linealidad y lo devuelve a su dimensión. Si la atención decide *de dónde* traer información, la FFN decide *qué hacer* con ella; muchos estudios la interpretan como una memoria clave-valor de hechos aprendidos.
+
+</Section>
+
+<Section kind="formal">
+
+Para un vector de token $x \in \mathbb{R}^d$ (vector de $d$ números reales), con $\mu$ y $\sigma^2$ la media y la varianza de sus componentes:
+
+<Formula label="LayerNorm" tex="\operatorname{LayerNorm}(x) = \gamma \odot \frac{x - \mu}{\sqrt{\sigma^2 + \varepsilon}} + \beta" reading="LayerNorm de x es gamma por, elemento a elemento, x menos mu dividido entre la raíz de sigma al cuadrado más épsilon, más beta">
+  $\gamma, \beta \in \mathbb{R}^d$ (vectores de números reales) son una ganancia y un desplazamiento aprendidos; $\varepsilon \approx 10^{-5}$ evita dividir por cero. Se normaliza **cada token por separado**, a lo largo de sus $d$ componentes.
+</Formula>
+
+<Formula label="RMSNorm" tex="\operatorname{RMSNorm}(x) = \gamma \odot \frac{x}{\sqrt{\tfrac{1}{d}\sum_{i=1}^{d} x_i^2 + \varepsilon}}" reading="RMSNorm de x es gamma por, elemento a elemento, x dividido entre la raíz de la media de los cuadrados de sus componentes más épsilon">
+  Sin restar la media ni $\beta$: menos operaciones y, en la práctica, la misma calidad.
+</Formula>
+
+<Formula label="Red feed-forward (clásica)" tex="\operatorname{FFN}(x) = \operatorname{GELU}(x W_1 + b_1)\, W_2 + b_2" reading="la FFN de x es GELU de x por W sub 1 más b sub 1, multiplicado por W sub 2 más b sub 2">
+  $W_1 \in \mathbb{R}^{d\times d_{ff}}$ y $W_2 \in \mathbb{R}^{d_{ff}\times d}$ (matrices de números reales), con $d_{ff} \approx 4d$. Tiene $\approx 8d^2$ parámetros, el doble que la atención.
+</Formula>
+
+<Formula label="SwiGLU (Llama, Qwen, Mistral)" tex="\operatorname{FFN}_{\text{SwiGLU}}(x) = \big(\operatorname{SiLU}(x W_g) \odot x W_u\big)\, W_d" reading="la FFN SwiGLU de x es SiLU de x por W sub g, multiplicado elemento a elemento por x por W sub u, y todo ello multiplicado por W sub d">
+  $\operatorname{SiLU}(z) = z\,\sigma(z)$. La rama $xW_g$ actúa como una **compuerta** que decide qué componentes de $xW_u$ pasan. Tiene tres matrices; para igualar parámetros se usa $d_{ff} \approx \tfrac{8}{3}d$.
+</Formula>
+
+<Formula label="Bloque pre-norm" tex="h = x + \operatorname{MHA}(\operatorname{Norm}(x)),\qquad y = h + \operatorname{FFN}(\operatorname{Norm}(h))" reading="h es x más la atención multi-cabeza de x normalizado; y es h más la FFN de h normalizado">
+  El transformer original era *post-norm*: $\operatorname{Norm}(x + \operatorname{MHA}(x))$. Poner la norma **antes** de cada subcapa (pre-norm) deja el flujo residual limpio y hace el entrenamiento mucho más estable en modelos profundos.
+</Formula>
+
+</Section>
+
+<Section kind="example">
+
+<WorkedExample>
+<Problem>
+Aplica LayerNorm y RMSNorm (con $\gamma = 1$, $\beta = 0$, $\varepsilon = 0$) al vector $x = (1, 2, 3, 6)$.
+</Problem>
+<Step>
+LayerNorm. Media: $\mu = (1 + 2 + 3 + 6)/4 = 3$. Desviaciones: $(-2, -1, 0, 3)$.
+</Step>
+<Step>
+Varianza: $\sigma^2 = (4 + 1 + 0 + 9)/4 = 3.5$, $\sigma = \sqrt{3.5} \approx 1.871$. Resultado: $(-1.069,\ -0.535,\ 0,\ 1.604)$. Media 0 y varianza 1 ✓.
+</Step>
+<Step>
+RMSNorm. Media de los cuadrados: $(1 + 4 + 9 + 36)/4 = 12.5$; raíz: $\approx 3.536$.
+</Step>
+<Step>
+Resultado: $(0.283,\ 0.566,\ 0.849,\ 1.697)$. Conserva el signo y las proporciones de $x$; solo cambia la escala (su media cuadrática pasa a ser 1).
+</Step>
+</WorkedExample>
+
+</Section>
+
+<Section kind="lab">
+
+<PyCell title="LayerNorm y RMSNorm" code={normalizaciones} hint="La segunda fila (100, 101, 102, 103) da el mismo LayerNorm que (0, 1, 2, 3): la media se resta." />
+<PyCell title="FFN clásica y SwiGLU" code={ffn} />
+<PyCell title="Un bloque transformer completo" code={bloque} />
+<PyCell title="Contar los parámetros de un modelo de 8 mil millones" code={contar} hint="Más de dos tercios de los parámetros están en las FFN." />
+<PyCell title="Lo que hacen las conexiones residuales" code={residual} />
+
+</Section>
+
+<Section kind="quiz">
+
+<Quiz questions={quiz} />
+
+</Section>
+
+<Section kind="ml">
+
+**Recetas que verás en todos los modelos abiertos** (y en sus ficheros `config.json`): `hidden_size` ($d$), `intermediate_size` ($d_{ff}$), `num_hidden_layers`, `num_attention_heads`, `rms_norm_eps`, `hidden_act: "silu"`. Con lo visto en este módulo puedes reconstruir el número de parámetros de cualquiera de ellos.
+
+**Estabilidad en producción.** Cuando se entrena o se ajusta en baja precisión (FP16/BF16), las normalizaciones se calculan en FP32 para evitar desbordamientos. Algunos modelos añaden *QK-norm* (normalizar queries y keys antes de la atención) para evitar que las puntuaciones crezcan sin control.
+
+El notebook opcional [`05_bloque_transformer.ipynb`](https://github.com/joserodriguezc/transfomers_guide/blob/main/notebooks/05_bloque_transformer.ipynb) construye un mini-GPT en PyTorch con estos bloques y lo entrena con un texto corto.
+
+<KeyTakeaways>
+- Un bloque = atención multi-cabeza + FFN, cada una con norma previa y conexión residual.
+- El flujo residual solo recibe sumas: la información y los gradientes atraviesan todo el modelo.
+- LayerNorm centra y escala cada token; RMSNorm solo escala y es lo que usan los LLM actuales.
+- La FFN (hoy SwiGLU) se aplica a cada token por separado y concentra la mayoría de los parámetros.
+- Pre-norm es más estable que post-norm para modelos profundos.
+</KeyTakeaways>
+
+**Lectura recomendada:** capítulo 1, sección «Encoder and Decoder Parts».
+
+</Section>
+
+<Section kind="extensions">
+
+1. Cambia el bloque de `03_bloque.py` a post-norm y apila 24 bloques. Compara la norma de la salida con la versión pre-norm.
+2. Calcula los parámetros de Qwen3-8B o Mistral-7B a partir de su `config.json` (búscalo en Hugging Face) con el método de `04_contar_parametros.py`.
+3. Implementa la derivada de LayerNorm y comprueba con diferencias finitas que es correcta.
+4. Investiga las arquitecturas *Mixture of Experts*: ¿qué parte del bloque sustituyen y por qué reducen el cómputo por token?
+
+</Section>

@@ -1,0 +1,133 @@
+import { quiz } from '../quizzes/tokenizacion'
+import niveles from '../snippets/tokenizacion/01_niveles.py?raw'
+import entrenar from '../snippets/tokenizacion/02_bpe_entrenar.py?raw'
+import codificar from '../snippets/tokenizacion/03_bpe_codificar.py?raw'
+import vocabLongitud from '../snippets/tokenizacion/04_vocab_vs_longitud.py?raw'
+import bytesUtf8 from '../snippets/tokenizacion/05_bytes.py?raw'
+import especiales from '../snippets/tokenizacion/06_especiales.py?raw'
+
+<Section kind="why">
+
+Un transformer no lee letras ni palabras: lee **enteros**. Antes de cualquier atención, un **tokenizador** convierte el texto en una secuencia de identificadores, y esa decisión condiciona todo lo demás:
+
+- **El coste.** Las APIs cobran por token y la atención crece con el cuadrado de la longitud. El mismo párrafo puede ocupar 60 tokens en inglés y 90 en otro idioma si el vocabulario se entrenó sobre todo con texto inglés.
+- **Lo que el modelo puede «ver».** Un modelo que trocea `1234` como `12` + `34` lo tiene más difícil para sumar; uno que nunca vio `ñ` como unidad la parte en bytes.
+- **Los errores raros.** Contar las letras de una palabra o invertirla es difícil cuando el modelo nunca vio las letras por separado, solo trozos como `straw` + `berry`.
+
+Y la idea no se queda en el texto: en el resto del curso veremos que **parches de imagen, ventanas de una serie temporal o tramas de audio** son también «tokens». Entender bien qué es un token es la primera pieza del transformer.
+
+</Section>
+
+<Section kind="intuition">
+
+Hay tres maneras naturales de trocear un texto:
+
+- **Por caracteres:** vocabulario minúsculo (unas decenas de símbolos), pero secuencias larguísimas, y cada token aporta poco significado.
+- **Por palabras:** secuencias cortas, pero un vocabulario enorme que además se queda corto con cualquier palabra nueva (`transformerizar`, un nombre propio, una errata).
+- **Por subpalabras:** el término medio que usan todos los modelos actuales. Las palabras frecuentes son un único token y las raras se componen de trozos frecuentes: `cantamos` → `cant` + `amos`.
+
+El algoritmo de subpalabras más usado es **BPE (Byte Pair Encoding)**. La idea cabe en una línea: *empieza con caracteres sueltos y fusiona una y otra vez el par de símbolos adyacentes más frecuente*. Cada fusión crea un símbolo nuevo en el vocabulario. Pruébalo:
+
+<Figure title="BPE paso a paso" caption="Mueve el control para aplicar fusiones. En verde, el símbolo que acaba de crearse. Observa cómo emergen terminaciones como «amos» o «ar» porque se repiten en muchas palabras.">
+  <BPEMerges />
+</Figure>
+
+Fíjate en dos cosas: el vocabulario **crece** una unidad por fusión y el número total de tokens del corpus **baja**. Elegir el tamaño del vocabulario es elegir un punto de ese compromiso (los LLM actuales usan entre 32 000 y 260 000 tokens).
+
+</Section>
+
+<Section kind="formal">
+
+Sea $V$ el vocabulario, con $|V| = N_v$ símbolos. Un tokenizador es una función que asigna a cada texto una secuencia de identificadores:
+
+<Formula label="Tokenizador" tex="\operatorname{tok}: \text{texto} \;\to\; (v_1, v_2, \dots, v_n),\qquad v_i \in \{1, \dots, N_v\}" reading="el tokenizador convierte un texto en una secuencia de n identificadores v sub 1 hasta v sub n, cada uno un entero entre 1 y N sub v">
+  $n$ es la longitud de la secuencia en tokens. Para el mismo texto, un vocabulario mayor suele dar un $n$ menor.
+</Formula>
+
+En cada paso, BPE cuenta, en todo el corpus, cuántas veces aparece cada par de símbolos adyacentes $(a, b)$, ponderando cada palabra $w$ por su frecuencia $f(w)$:
+
+<Formula label="Frecuencia de un par en BPE" tex="c(a, b) = \sum_{w} f(w)\cdot \#_{w}(a, b),\qquad (a^*, b^*) = \arg\max_{(a,b)} c(a, b)" reading="c de a, b es la suma, sobre todas las palabras w, de la frecuencia de w por el número de veces que el par a, b aparece en w; el par elegido es el que maximiza c">
+  $\#_w(a,b)$ cuenta cuántas veces aparece $a$ seguido de $b$ en la segmentación actual de $w$. El par ganador $(a^*, b^*)$ se fusiona en el símbolo nuevo $a^*b^*$, que se añade a $V$.
+</Formula>
+
+<Formula label="Tamaño del vocabulario tras k fusiones" tex="N_v = |\Sigma_0| + k" reading="el tamaño del vocabulario es el número de símbolos iniciales más el número de fusiones k">
+  $\Sigma_0$ es el alfabeto inicial: los caracteres del corpus o, en los tokenizadores *byte-level* (GPT, Llama, Qwen), los 256 valores posibles de un byte. Con bytes, **ningún texto queda fuera del vocabulario**.
+</Formula>
+
+Una medida práctica es la **fertilidad**: tokens por palabra. Cuanto más alta, más caro y más largo es procesar ese idioma.
+
+<Formula label="Fertilidad de un tokenizador" tex="\text{fertilidad} = \frac{n_{\text{tokens}}}{n_{\text{palabras}}}" reading="la fertilidad es el número de tokens dividido entre el número de palabras del texto" />
+
+</Section>
+
+<Section kind="example">
+
+<WorkedExample>
+<Problem>
+Corpus: `bajo` (×6), `bajar` (×3), `alto` (×4). Con el marcador de fin de palabra `_`, aplica las dos primeras fusiones de BPE.
+</Problem>
+<Step>
+Segmentación inicial: `b a j o _` (6), `b a j a r _` (3), `a l t o _` (4).
+</Step>
+<Step>
+Contamos pares ponderados por frecuencia: $(b,a)$ aparece en `bajo` y `bajar`: $6 + 3 = 9$. $(a,j)$: $6 + 3 = 9$. $(o,\_)$: $6 + 4 = 10$. $(j,o)$: 6. $(a,l), (l,t), (t,o)$: 4 cada uno. $(j,a), (a,r), (r,\_)$: 3.
+</Step>
+<Step>
+El máximo es $(o,\_)$ con $c = 10$: se crea `o_`. Ahora: `b a j o_`, `b a j a r _`, `a l t o_`.
+</Step>
+<Step>
+Recontamos: $(b,a) = 9$, $(a,j) = 9$, $(j,o\_) = 6$, $(t,o\_) = 4$… Hay empate a 9; con desempate alfabético gana $(a,j)$ (`a` va antes que `b`). Se crea `aj`: `b aj o_`, `b aj a r _`, `a l t o_`.
+</Step>
+<Step>
+Tras dos fusiones el vocabulario tiene $|\Sigma_0| + 2$ símbolos y el corpus pasó de $6\cdot5 + 3\cdot6 + 4\cdot5 = 68$ a $6\cdot3 + 3\cdot5 + 4\cdot4 = 49$ tokens.
+</Step>
+</WorkedExample>
+
+</Section>
+
+<Section kind="lab">
+
+<PyCell title="Caracteres, palabras y subpalabras" code={niveles} />
+<PyCell title="Entrenar BPE desde cero" code={entrenar} hint="Cambia el corpus (añade 'cantábamos', 'saltábamos'…) y observa qué fusiones aparecen." />
+<PyCell title="Codificar palabras nuevas con las fusiones aprendidas" code={codificar} hint="'jugamos' nunca se vio, pero se segmenta con trozos conocidos: no existe el token desconocido." />
+<PyCell title="Vocabulario frente a longitud de la secuencia" code={vocabLongitud} />
+<PyCell title="Por qué los tokenizadores modernos usan bytes" code={bytesUtf8} />
+<PyCell title="Tokens especiales, padding y máscara" code={especiales} />
+
+</Section>
+
+<Section kind="quiz">
+
+<Quiz questions={quiz} />
+
+</Section>
+
+<Section kind="ml">
+
+**En la práctica** no se entrena un tokenizador por proyecto: se usa el del modelo. Con Hugging Face, `AutoTokenizer.from_pretrained("bert-base-uncased")` convierte «The Transformer has revolutionized NLP.» en IDs que empiezan por `101` (`[CLS]`) y terminan por `102` (`[SEP]`), con palabras como `revolutionized` partidas en varias piezas. Dos consejos de producción:
+
+- **Mide en tu idioma.** Calcula la fertilidad del tokenizador sobre tus propios textos antes de estimar costes o elegir modelo.
+- **Nunca mezcles tokenizadores.** Los IDs solo tienen sentido para el modelo con el que se entrenó el tokenizador; un desajuste no da error, da basura.
+
+El notebook opcional [`01_tokenizacion.ipynb`](https://github.com/joserodriguezc/transfomers_guide/blob/main/notebooks/01_tokenizacion.ipynb) compara los tokenizadores de BERT, GPT-2 y Qwen sobre el mismo texto en español.
+
+<KeyTakeaways>
+- Un tokenizador convierte texto en una secuencia de enteros; el modelo nunca ve el texto.
+- Caracteres: vocabulario mínimo y secuencias largas. Palabras: lo contrario, y fallan con palabras nuevas. Subpalabras: el compromiso.
+- BPE fusiona repetidamente el par adyacente más frecuente; cada fusión añade un token al vocabulario.
+- Partiendo de bytes UTF-8, cualquier texto es representable y no existe el «token desconocido».
+- La fertilidad (tokens por palabra) determina coste y longitud de contexto efectiva en cada idioma.
+</KeyTakeaways>
+
+**Lectura recomendada:** capítulo 1, sección «Tokenizer: Text Representation in the Transformer».
+
+</Section>
+
+<Section kind="extensions">
+
+1. Entrena BPE con un párrafo en español y otro en inglés del mismo tamaño y compara la fertilidad de cada idioma con el mismo número de fusiones.
+2. Implementa **WordPiece**: en lugar de la frecuencia del par, elige el que maximiza $c(a,b) / (c(a)\,c(b))$. ¿Cambia el orden de las fusiones?
+3. Escribe un tokenizador que trate los números dígito a dígito y razona por qué eso ayuda a la aritmética.
+4. Investiga el **token healing**: qué ocurre cuando un prompt termina a mitad de un token frecuente.
+
+</Section>

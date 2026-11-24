@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+
+# Material de referencia local (no se versiona)
+docs/*.pdf
+
+# Configuración local del editor
+.vscode/
+
+# Notebooks
+.ipynb_checkpoints/

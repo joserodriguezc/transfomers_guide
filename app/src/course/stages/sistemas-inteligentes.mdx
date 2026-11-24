@@ -1,0 +1,121 @@
+import { quiz } from '../quizzes/sistemas-inteligentes'
+import agenteSam3 from '../snippets/sistemas-inteligentes/01_agente_sam3.py?raw'
+import fiabilidad from '../snippets/sistemas-inteligentes/02_fiabilidad.py?raw'
+import topologias from '../snippets/sistemas-inteligentes/03_topologias.py?raw'
+import mapa from '../snippets/sistemas-inteligentes/04_mapa_del_curso.py?raw'
+
+<Section kind="why">
+
+A lo largo del curso, el transformer ha pasado de ser un modelo de texto a ser una **interfaz general** entre datos, decisiones y herramientas. La frontera ya no la marca un modelo con más parámetros o una ventana de contexto mayor, sino **sistemas** que combinan varios modelos, reparten cómputo en inferencia, coordinan herramientas, gestionan memoria y aprenden de sus errores. Solo en arXiv, los artículos sobre sistemas agénticos y multiagente se triplicaron de 2024 a 2025, y los de cómputo en test casi también.
+
+Este módulo final cierra el círculo con dos ideas. La primera, práctica: **combinar capacidades**, como un modelo multimodal que usa SAM 3 como herramienta para resolver peticiones que ninguno resolvería solo. La segunda, de diseño: **escalar sistemas agénticos no es añadir agentes**; el rendimiento depende de la **topología** —cómo fluye la información y quién decide— más que del tamaño de los modelos.
+
+</Section>
+
+<Section kind="intuition">
+
+**Combinar capacidades.** SAM 3 (<StageRef slug="segmentacion-sam" />) segmenta «bola de lana» pero no entiende «la bola de lana **roja de más a la izquierda**». Un modelo multimodal (MLLM) entiende la frase pero no produce máscaras precisas. Conectados en un **bucle de agente** (<StageRef slug="agentes" />), el MLLM analiza, planifica y llama a SAM 3; examina las máscaras devueltas, descarta, vuelve a llamar si hace falta y termina con una **herramienta terminal** que selecciona la máscara final. Un coordinador mantiene el estado de la sesión.
+
+**Fiabilidad de las cadenas.** Si cada paso sale bien con probabilidad $p$, una cadena de $k$ pasos sale bien con $p^k$: con $p = 0.95$ y 20 pasos, solo un 36 %. La verificación (tests, un juez, un humano) y los reintentos son lo que hace viables las tareas largas.
+
+<Figure title="Fiabilidad de una cadena de pasos" caption="Mueve la probabilidad por paso, los reintentos y la tasa de detección del verificador.">
+  <ReliabilityViz />
+</Figure>
+
+**La ciencia de escalar sistemas agénticos.** Investigaciones recientes muestran que, una vez que un solo modelo supera cierto nivel, añadir agentes no garantiza mejoras: la **sobrecarga de coordinación**, el **contexto fragmentado** y la **propagación de errores** pueden anular la ventaja. Algunas tareas ganan con coordinación **centralizada** (un supervisor que valida y evita errores en cascada); otras, con especialistas **descentralizados** que exploran en paralelo; y las tareas **secuenciales** con dependencias estrictas suelen ir mejor con **un solo agente** bien equipado de herramientas. El rendimiento es un resultado de la arquitectura.
+
+**El mapa del curso.** Visto desde arriba, todo encaja en un mismo esquema: convertir la entrada en tokens, añadir posición, apilar bloques de atención y FFN, y poner una cabeza para la tarea. Lo que cambia entre dominios es qué es un token.
+
+<Figure title="Un token en cada dominio" caption="Elige un dominio para ver qué es un token y qué módulos lo tratan.">
+  <CourseMap />
+</Figure>
+
+</Section>
+
+<Section kind="formal">
+
+<Formula label="Éxito de una cadena de pasos" tex="P(\text{éxito}) = \prod_{i=1}^{k} p_i \;=\; p^k\ \text{si todos los pasos son iguales}" reading="la probabilidad de éxito de una cadena es el producto de las probabilidades de éxito de cada paso, que es p elevado a k si todos son iguales" />
+
+<Formula label="Un paso con verificación y un reintento" tex="p' = p + (1 - p)\,d\,p" reading="la probabilidad de éxito de un paso con verificación es p más la probabilidad de fallar, por la de detectarlo, por la de acertar al reintentar">
+  $d$ es la tasa de detección del verificador. Con $p = 0.95$ y $d = 0.8$: $p' = 0.988$, y la cadena de 20 pasos pasa del 36 % al 79 %.
+</Formula>
+
+<Formula label="Redundancia en tareas paralelizables" tex="P(\text{éxito}) = 1 - (1 - p)^n" reading="con n agentes intentando la misma subtarea y un verificador que elige, la probabilidad de éxito es uno menos uno menos p elevado a n">
+  Es pass@N (<StageRef slug="razonamiento" bare />) aplicado a agentes. Sin verificador, la votación por mayoría crece más despacio.
+</Formula>
+
+<Formula label="Coste de coordinación en tareas secuenciales" tex="P(\text{éxito}) \approx p^{k}\,(1 - c)^{h}" reading="la probabilidad de éxito es aproximadamente p elevado a k por uno menos c elevado al número de traspasos h">
+  Modelo simplificado: cada uno de los $h$ traspasos entre agentes pierde contexto con probabilidad $c$. Repartir una cadena dependiente entre más agentes añade traspasos sin añadir redundancia.
+</Formula>
+
+</Section>
+
+<Section kind="example">
+
+<WorkedExample>
+<Problem>
+Un agente de código encadena 10 pasos con $p = 0.9$ cada uno. Compara: (a) sin verificación; (b) con tests que detectan el 90 % de los fallos y un reintento; (c) repartiendo los 10 pasos entre 5 agentes con $c = 0.05$ por traspaso y sin verificación.
+</Problem>
+<Step>
+(a) $0.9^{10} \approx 0.349$.
+</Step>
+<Step>
+(b) $p' = 0.9 + 0.1\cdot0.9\cdot0.9 = 0.981$. Cadena: $0.981^{10} \approx 0.825$.
+</Step>
+<Step>
+(c) Hay 4 traspasos: $0.349\cdot0.95^4 \approx 0.349\cdot0.815 \approx 0.284$. Peor que un solo agente.
+</Step>
+<Step>
+La mejora decisiva viene de la **verificación**, no de multiplicar agentes. Más agentes compensan cuando las subtareas son independientes y alguien valida (redundancia), no cuando la tarea es una cadena de dependencias.
+</Step>
+</WorkedExample>
+
+</Section>
+
+<Section kind="lab">
+
+<PyCell title="Un agente que usa SAM 3 como herramienta" code={agenteSam3} />
+<PyCell title="Fiabilidad de cadenas largas" code={fiabilidad} />
+<PyCell title="Topologías: cuándo ayudan más agentes" code={topologias} />
+<PyCell title="El mapa del curso en una tabla" code={mapa} />
+
+</Section>
+
+<Section kind="quiz">
+
+<Quiz questions={quiz} />
+
+</Section>
+
+<Section kind="ml">
+
+**Cómo seguir.** Las habilidades que este curso ha ido construyendo son exactamente las de un buen diseñador de sistemas: saber qué es un token en tu dominio, qué cuesta la atención y la KV cache, cómo se entrena y evalúa un modelo, cuándo merece la pena pensar más en inferencia, cómo se coordina un agente con herramientas y cómo se despliega con garantías. Un modelo bien elegido dentro de un sistema bien diseñado supera casi siempre a un modelo más grande mal integrado.
+
+Algunas pautas finales:
+
+- Empieza por **un solo agente con buenas herramientas y verificación**; añade agentes solo para subtareas paralelizables y con un coordinador que valide.
+- Mide la fiabilidad **de extremo a extremo**, no la de cada componente.
+- Diseña los bucles de mejora: registra trazas, convierte los fallos en datos de evaluación y de entrenamiento (RL con recompensas verificables o relativas, <StageRef slug="optimizacion" />).
+
+El notebook opcional [`23_sistemas_inteligentes.ipynb`](https://github.com/joserodriguezc/transfomers_guide/blob/main/notebooks/23_sistemas_inteligentes.ipynb) monta un agente que combina un modelo de visión-lenguaje con un segmentador para resolver referencias como «el objeto rojo de la izquierda».
+
+<KeyTakeaways>
+- Los transformers son hoy componentes de sistemas: modelos + herramientas + memoria + cómputo en test + mejora continua.
+- Combinar capacidades (un MLLM que usa SAM 3) resuelve tareas que ningún modelo resuelve solo.
+- La fiabilidad de una cadena cae como $p^k$; la verificación y los reintentos la sostienen.
+- Más agentes no implica mejor sistema: la topología (centralizada, descentralizada, un solo agente) debe ajustarse a la tarea.
+- En todos los dominios, la arquitectura es la misma; cambia qué es un token.
+</KeyTakeaways>
+
+**Lectura recomendada:** capítulo 12 completo («Where to Go Next: From Models to Intelligent Systems»).
+
+</Section>
+
+<Section kind="extensions">
+
+1. Amplía `01_agente_sam3.py` para que el planificador pueda llamar a SAM 3 con un concepto alternativo si el primero no devuelve máscaras.
+2. Modifica `03_topologias.py` para incluir una topología híbrida: un supervisor que reparte subtareas paralelas y un único agente para la parte secuencial.
+3. Toma un flujo de trabajo real de tu equipo, descomponlo en pasos, estima $p$ por paso y calcula dónde pondrías verificadores.
+4. Elige un dominio que no aparezca en el curso (proteínas, grafos, tablas…) y define qué sería un token y qué cabeza usarías.
+
+</Section>
