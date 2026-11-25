@@ -95,7 +95,7 @@ El modelo «sabe» que aún debe conseguir 6 en el último paso, más de lo que 
 
 <Section kind="ml">
 
-**Cuándo usar Decision Transformer.** Cuando hay un buen **dataset offline** de trayectorias (logs de un sistema, demostraciones de expertos, partidas) y explorar es caro o peligroso. En el libro se usa un modelo preentrenado de Hugging Face (`edbeeching/decision-transformer-gym-hopper-expert`) para controlar el *Hopper* de MuJoCo: un robot de una pierna que debe saltar hacia delante sin caerse.
+**Cuándo usar Decision Transformer.** Cuando hay un buen **dataset offline** de trayectorias (logs de un sistema, demostraciones de expertos, partidas) y explorar es caro o peligroso. Un buen punto de partida es un modelo preentrenado de Hugging Face (`edbeeching/decision-transformer-gym-hopper-expert`) para controlar el *Hopper* de MuJoCo: un robot de una pierna que debe saltar hacia delante sin caerse.
 
 **Limitaciones y Online Decision Transformer.** Un DT puro no supera la calidad de sus datos. El **ODT** añade una fase de ajuste **online**: una política **estocástica** con un término de entropía para explorar, y un **buffer de trayectorias** (no de transiciones) que se inicia con las mejores trayectorias offline; las nuevas se guardan con el retorno que realmente obtuvieron (*hindsight relabeling*) y desplazan a las más antiguas.
 
@@ -109,7 +109,6 @@ El notebook opcional [`17_decision_transformer.ipynb`](https://github.com/josero
 - El Online Decision Transformer añade exploración con entropía y un buffer de trayectorias reetiquetadas.
 </KeyTakeaways>
 
-**Lectura recomendada:** capítulo 7, secciones «Foundational Concepts in Reinforcement Learning», «Decision Transformer» y «Going Live: Online Decision Transformer».
 
 </Section>
 

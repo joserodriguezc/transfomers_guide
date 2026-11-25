@@ -105,7 +105,7 @@ Además, las posiciones aprendidas eran $14\times14$ y ahora hacen falta $24\tim
 - **Regularización.** *Dropout*, *weight decay*, *stochastic depth* y parada temprana. Los ViT sobreajustan con facilidad en datasets pequeños: parte siempre de un modelo preentrenado.
 - **Pérdidas.** Para segmentar tejados en satélite, IoU o Dice; para lesiones raras en imagen médica, **focal** o combinaciones Dice + entropía cruzada, que compensan el desbalance.
 
-**Ajuste fino en la práctica.** Con `transformers`, `AutoModelForImageClassification.from_pretrained("microsoft/swinv2-tiny-patch4-window8-256", num_labels=20)` y un `Trainer` bastan para adaptar Swin V2 a un dataset propio, como el de 20 tipos de *snacks* del libro.
+**Ajuste fino en la práctica.** Con `transformers`, `AutoModelForImageClassification.from_pretrained("microsoft/swinv2-tiny-patch4-window8-256", num_labels=20)` y un `Trainer` bastan para adaptar Swin V2 a un dataset propio, como `Matthijs/snacks` (20 tipos de aperitivos).
 
 El notebook opcional [`11_vision_transformers.ipynb`](https://github.com/joserodriguezc/transfomers_guide/blob/main/notebooks/11_vision_transformers.ipynb) ajusta Swin V2 a ese dataset y visualiza los mapas de atención del token [CLS] de un ViT.
 
@@ -117,7 +117,6 @@ El notebook opcional [`11_vision_transformers.ipynb`](https://github.com/joserod
 - Aumento de datos, regularización y pérdida (Dice, focal) deben elegirse según la tarea.
 </KeyTakeaways>
 
-**Lectura recomendada:** capítulo 3, secciones «Embeddings and Tokenization for Vision Models», «Key Strategies for Improving the Robustness…» y «Swin Transformer V2».
 
 </Section>
 

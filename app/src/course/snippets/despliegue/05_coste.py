@@ -1,4 +1,4 @@
-# Coste por 1000 tokens: API frente a GPU propia (fórmula del capítulo 11)
+# Coste por 1000 tokens: API frente a GPU propia
 def coste_1k_propio(usd_hora, tokens_s, utilizacion=1.0):
     return 1000 * usd_hora / (tokens_s * 3600 * utilizacion)
 

@@ -107,7 +107,7 @@ Cuantizar ahorra una GPU y además acelera el decode (se leen 4 veces menos byte
 
 **Ingeniería del tiempo de ejecución** (vLLM, SGLang, TGI): KV cache paginada, **caché de prefijos** (reutilizar el prefill de un mensaje de sistema compartido), **prefill por trozos** (que un prompt enorme no bloquee a los demás), **batching continuo** (programar prefill y decode juntos) y decodificación especulativa. Aumentar el lote parece gratis hasta que la KV cache se queda sin memoria y las peticiones empiezan a encolarse.
 
-**Evaluar el despliegue.** Mide TTFT, latencia entre tokens, latencia de extremo a extremo y tokens por segundo, con pruebas de carga que suban la concurrencia hasta encontrar el punto de saturación. Optimiza el **p95/p99**, no la media: la experiencia del usuario la definen las colas. En el ejemplo del libro, el nivel «fast» de una API cuesta el doble por token pero da 2.7 veces más rendimiento por petición.
+**Evaluar el despliegue.** Mide TTFT, latencia entre tokens, latencia de extremo a extremo y tokens por segundo, con pruebas de carga que suban la concurrencia hasta encontrar el punto de saturación. Optimiza el **p95/p99**, no la media: la experiencia del usuario la definen las colas. Compara también niveles de servicio: un nivel «rápido» más caro por token puede salir más barato por usuario atendido.
 
 **Seguridad.** Los servidores de inferencia distribuida (comunicaciones de PyTorch Distributed, transferencia de KV cache) no cifran ni autentican por defecto: red privada con cortafuegos, IPs explícitas en lugar de `0.0.0.0`, solo el puerto de la API expuesto, dominios de medios restringidos para evitar SSRF y mínimo privilegio. Y para modelos que leen contenido externo, defensas frente a *prompt injection*.
 
@@ -123,7 +123,6 @@ El notebook opcional [`22_despliegue.ipynb`](https://github.com/joserodriguezc/t
 - Evalúa con p95/p99, calcula el coste por 1000 tokens y aísla la red interna del clúster.
 </KeyTakeaways>
 
-**Lectura recomendada:** capítulo 11 completo («Deploying Transformer Models»).
 
 </Section>
 

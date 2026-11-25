@@ -2,7 +2,7 @@
 
 **Curso interactivo y autocontenido, en español, sobre la arquitectura transformer y sus aplicaciones más allá del texto.** Cada concepto se presenta con su motivación, una intuición apoyada en gráficos manipulables, su formalización matemática, un ejemplo resuelto paso a paso, código Python ejecutable en el propio navegador y preguntas de autoevaluación.
 
-El temario sigue la estructura de *Transformers: The Definitive Guide — Applications Beyond NLP* (Nicole Koenigstein, O'Reilly, 2026) y se organiza en **23 módulos** agrupados en cuatro partes: de la tokenización y la atención a las series temporales, la visión, la difusión, el audio, el aprendizaje por refuerzo, el razonamiento, los agentes y el despliegue.
+El temario se organiza en **23 módulos** agrupados en cuatro partes: de la tokenización y la atención a las series temporales, la visión, la difusión, el audio, el aprendizaje por refuerzo, el razonamiento, los agentes y el despliegue.
 
 ## Contenido
 
@@ -41,31 +41,31 @@ El temario sigue la estructura de *Transformers: The Definitive Guide — Applic
 
 ## Temario
 
-| Parte | Módulo | Capítulo del libro |
-| --- | --- | --- |
-| **I. Fundamentos del transformer** | 1 · Tokenización | 1 |
-| | 2 · Embeddings y codificación posicional | 1 |
-| | 3 · Atención por producto escalado | 1 |
-| | 4 · Atención multi-cabeza | 1 |
-| | 5 · El bloque transformer | 1 |
-| | 6 · Encoder, decoder y máscaras | 1 |
-| | 7 · Contexto largo: RoPE, PI y YaRN | 1 |
-| | 8 · Atención eficiente: MQA, GQA, KV cache y FlashAttention | 1 |
-| **II. Más allá del texto** | 9 · Series temporales: lo que hay que entender antes del modelo | 2 |
-| | 10 · Transformers para series temporales (Chronos, PatchTST, TimesFM, AnomalyBERT) | 2 |
-| | 11 · Vision transformers: ViT y Swin | 3 |
-| | 12 · Segmentación con Segment Anything (SAM, SAM 2, SAM 3) | 3 |
-| | 13 · Modelos de difusión | 4 |
-| | 14 · Transformers de difusión: imagen y vídeo (DiT, PixArt, LTX-Video, Latte, Tora) | 4 y 5 |
-| | 15 · Del sonido a la señal: ondas y espectrogramas | 6 |
-| | 16 · Transformers de audio: Whisper y más allá | 6 |
-| **III. Decisión y razonamiento** | 17 · Aprendizaje por refuerzo y Decision Transformer | 7 |
-| | 18 · Modelos del mundo con transformers | 7 |
-| | 19 · Modelos de razonamiento y cómputo en test (GRPO, MCTS, MoE) | 8 |
-| | 20 · Agentes de IA | 9 |
-| **IV. Producción** | 21 · Optimizar LLMs y agentes (RULER, AdaptThink, Muon) | 10 |
-| | 22 · Desplegar transformers | 11 |
-| | 23 · De modelos a sistemas inteligentes | 12 |
+| Parte | Módulo |
+| --- | --- |
+| **I. Fundamentos del transformer** | 1 · Tokenización |
+| | 2 · Embeddings y codificación posicional |
+| | 3 · Atención por producto escalado |
+| | 4 · Atención multi-cabeza |
+| | 5 · El bloque transformer |
+| | 6 · Encoder, decoder y máscaras |
+| | 7 · Contexto largo: RoPE, PI y YaRN |
+| | 8 · Atención eficiente: MQA, GQA, KV cache y FlashAttention |
+| **II. Más allá del texto** | 9 · Series temporales: lo que hay que entender antes del modelo |
+| | 10 · Transformers para series temporales (Chronos, PatchTST, TimesFM, AnomalyBERT) |
+| | 11 · Vision transformers: ViT y Swin |
+| | 12 · Segmentación con Segment Anything (SAM, SAM 2, SAM 3) |
+| | 13 · Modelos de difusión |
+| | 14 · Transformers de difusión: imagen y vídeo (DiT, PixArt, LTX-Video, Latte, Tora) |
+| | 15 · Del sonido a la señal: ondas y espectrogramas |
+| | 16 · Transformers de audio: Whisper y más allá |
+| **III. Decisión y razonamiento** | 17 · Aprendizaje por refuerzo y Decision Transformer |
+| | 18 · Modelos del mundo con transformers |
+| | 19 · Modelos de razonamiento y cómputo en test (GRPO, MCTS, MoE) |
+| | 20 · Agentes de IA |
+| **IV. Producción** | 21 · Optimizar LLMs y agentes (RULER, AdaptThink, Muon) |
+| | 22 · Desplegar transformers |
+| | 23 · De modelos a sistemas inteligentes |
 
 En total: 23 módulos, 38 visualizaciones interactivas, 123 celdas de Python, 159 preguntas de autoevaluación y 23 notebooks opcionales.
 
@@ -144,7 +144,6 @@ app/                          Aplicación web (React 19 + TypeScript + Vite + MD
 notebooks/                    Notebooks opcionales con modelos reales (generados)
 tools/                        Herramientas Python: dev, check-snippets, build-notebooks
 tests/                        Pruebas de los snippets con pytest
-docs/                         Material de referencia local (el PDF no se versiona)
 ```
 
 No hay backend: es un sitio estático. El proyecto Python (gestionado con uv) contiene las herramientas, las pruebas de los snippets y las dependencias opcionales de los notebooks.
@@ -165,7 +164,5 @@ Para añadir un módulo:
 Para enlazar otro módulo usa `<StageRef slug="atencion" />`: muestra «módulo 3» con el número actualizado.
 
 ## Créditos
-
-El temario está inspirado en *Transformers: The Definitive Guide — Applications Beyond NLP*, de Nicole Koenigstein (O'Reilly Media, 2026). Las explicaciones, ejemplos, visualizaciones y código del curso son originales; cada módulo indica el capítulo del libro que lo amplía. El libro no se incluye en el repositorio.
 
 La infraestructura de la aplicación (plantilla de módulos, celdas de Pyodide, motor de preguntas y glosario de notación) parte del curso [Álgebra lineal para machine learning](https://github.com/joserodriguezc/linear_algebra).

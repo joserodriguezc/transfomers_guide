@@ -17,10 +17,6 @@ export function Home() {
           agentes y el despliegue. En cada uno: la intuición con gráficos interactivos, las fórmulas explicadas símbolo a símbolo,
           un ejemplo resuelto paso a paso, código Python ejecutable en el navegador y preguntas para comprobar lo aprendido.
         </p>
-        <p className="mt-2 max-w-2xl text-xs text-slate-500 dark:text-slate-400">
-          Temario inspirado en <em>Transformers: The Definitive Guide</em> (Nicole Koenigstein, O’Reilly, 2026). Cada módulo indica
-          el capítulo que lo amplía.
-        </p>
         <div className="mt-6 flex flex-wrap items-center gap-4">
           <Link
             to={`/modulo/${next.slug}`}

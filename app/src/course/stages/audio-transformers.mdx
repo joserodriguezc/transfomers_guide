@@ -89,7 +89,7 @@ Por eso los modelos conversacionales bajan la frecuencia de tramas (12.5 Hz) y s
 
 <Section kind="ml">
 
-**Transcribir una reunión en producción** (el ejemplo del libro con Kimi-Audio) es un pequeño sistema: (1) **diarización** con `pyannote.audio` para saber quién habla en cada tramo; (2) recortar el audio por hablante; (3) transcribir cada fragmento con instrucciones explícitas; (4) unir con marcas de tiempo y nombres. Con un modelo fundacional se puede además preguntar «¿qué decisiones se tomaron?» directamente sobre el audio.
+**Transcribir una reunión en producción** es un pequeño sistema: (1) **diarización** con `pyannote.audio` para saber quién habla en cada tramo; (2) recortar el audio por hablante; (3) transcribir cada fragmento con instrucciones explícitas; (4) unir con marcas de tiempo y nombres. Con un modelo fundacional se puede además preguntar «¿qué decisiones se tomaron?» directamente sobre el audio.
 
 **Elegir modelo.** Para solo transcribir, Whisper (o sus variantes destiladas, más rápidas) sigue siendo la opción más simple y barata. Para entender audio en general (sonidos, emociones, preguntas abiertas), Qwen2-Audio. Para conversación de voz a voz, modelos como Kimi-Audio. Mide el **WER** en tu propio audio (acentos, vocabulario técnico, ruido) antes de decidir.
 
@@ -105,7 +105,6 @@ El notebook opcional [`16_audio_transformers.ipynb`](https://github.com/joserodr
 - El WER mide la calidad de la transcripción; la diarización añade quién habla.
 </KeyTakeaways>
 
-**Lectura recomendada:** capítulo 6, secciones «The Rise of Speech Transformers: The Impact of Whisper», «Audio Foundation Models», «Qwen2-Audio», «Transcribing a Meeting with Kimi-Audio», «Segment Anything in Audio» y «Beyond Text and Speech».
 
 </Section>
 

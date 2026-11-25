@@ -3,7 +3,7 @@ import numpy as np
 
 libros, pasos = 4, 6
 # Sin retraso habría que predecir los 4 códigos del paso t a la vez (o 4 veces más pasos si se aplanan).
-# Con retraso, el libro k se desplaza k posiciones: cada paso predice 4 códigos de instantes distintos.
+# Con retraso, el libro de códigos k se desplaza k posiciones: cada paso predice 4 códigos de instantes distintos.
 patron = np.full((libros, pasos + libros - 1), "  .  ", dtype=object)
 for k in range(libros):
     for t in range(pasos):

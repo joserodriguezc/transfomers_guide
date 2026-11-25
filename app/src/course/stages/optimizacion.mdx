@@ -93,7 +93,7 @@ $\delta$ es el «precio» que se está dispuesto a pagar en precisión por la ef
 
 <Section kind="ml">
 
-**El ecosistema de RL abierto.** En el libro, ART + RULER entrenan un agente de LangGraph para calcular medias móviles de precios bursátiles, con una recompensa numérica determinista que puede sustituirse por RULER en tareas abiertas. **rLLM** organiza el ciclo completo para agentes (registro de datasets, motor de ejecución de agentes, entrenamiento) y se combina con **verl** para entrenar con GRPO a escala; con esa receta se entrenaron agentes de código como DeepCoder.
+**El ecosistema de RL abierto.** Por ejemplo, ART + RULER pueden entrenar un agente de LangGraph para calcular medias móviles de precios bursátiles, con una recompensa numérica determinista que puede sustituirse por RULER en tareas abiertas. **rLLM** organiza el ciclo completo para agentes (registro de datasets, motor de ejecución de agentes, entrenamiento) y se combina con **verl** para entrenar con GRPO a escala; con esa receta se entrenaron agentes de código como DeepCoder.
 
 **Consejos prácticos.** Empieza con la rúbrica por defecto de RULER y pon las instrucciones específicas en el prompt del agente (el juez las ve como parte de la trayectoria). Mide siempre precisión **y** longitud de respuesta al entrenar razonamiento. Y registra cada *rollout* (Weights & Biases, Langfuse): depurar RL sin trazas es imposible.
 
@@ -107,7 +107,6 @@ El notebook opcional [`21_optimizacion.ipynb`](https://github.com/joserodriguezc
 - Checkpoint Engine redistribuye los pesos entre entrenamiento e inferencia en segundos.
 </KeyTakeaways>
 
-**Lectura recomendada:** capítulo 10 completo; para Muon, capítulo 8, sección «Muon: Scaling Optimization for the Agentic Era».
 
 </Section>
 

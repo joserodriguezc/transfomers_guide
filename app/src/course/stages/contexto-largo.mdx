@@ -113,7 +113,7 @@ vllm serve Qwen/Qwen3-8B --rope-scaling '{"rope_type":"yarn","factor":4.0,"origi
 
 Dos advertencias de despliegue: el *scaling* estático afecta también a los textos cortos (actívalo solo si necesitas el contexto largo) y la memoria de la **KV cache** crece linealmente con la longitud (<StageRef slug="variantes-atencion" />).
 
-**Evaluar.** La perplejidad con ventana deslizante sobre documentos largos y las pruebas de «aguja en el pajar» (esconder un dato en un texto enorme y preguntarlo) son las comprobaciones mínimas antes de prometer una ventana de contexto. En el ejemplo del libro, Falcon-7B da una perplejidad de 5.08 a una frase de Wikipedia sobre Apple y 121 a «A Falcon is a generative transformer model and it can't fly».
+**Evaluar.** La perplejidad con ventana deslizante sobre documentos largos y las pruebas de «aguja en el pajar» (esconder un dato en un texto enorme y preguntarlo) son las comprobaciones mínimas antes de prometer una ventana de contexto. Un buen hábito: comparar la perplejidad de un texto «esperado» con la de uno sorprendente para el modelo; la diferencia debe ser clara.
 
 El notebook opcional [`07_contexto_largo.ipynb`](https://github.com/joserodriguezc/transfomers_guide/blob/main/notebooks/07_contexto_largo.ipynb) calcula la perplejidad de un modelo pequeño con distintas longitudes de contexto, con y sin escalado de RoPE.
 
@@ -125,7 +125,6 @@ El notebook opcional [`07_contexto_largo.ipynb`](https://github.com/joserodrigue
 - Con contextos enormes, la softmax diluye la información relevante (problema del pajar).
 </KeyTakeaways>
 
-**Lectura recomendada:** capítulo 1, sección «Longer Context Windows with Better Performance» y el recuadro «Softmax and the Haystack Problem».
 
 </Section>
 

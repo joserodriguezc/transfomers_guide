@@ -103,7 +103,7 @@ Decuantizar: centros $1.5, -0.5, 1.5, 1.5$ por $s = 4$: $(6, -2, 6, 6)$. Los val
 
 <Section kind="ml">
 
-**Usarlos en la práctica.** Chronos se carga con `ChronosPipeline.from_pretrained("amazon/chronos-t5-small")` y `pipeline.predict(context, prediction_length)` devuelve muestras de trayectorias. PatchTST está en `transformers` (`PatchTSTForPrediction`) y TimesFM tiene paquete propio con *checkpoints* en Hugging Face. El ajuste fino suele requerir pocos datos y épocas: en el libro, PatchTST con parches de 8 sobre precios diarios de IBM alcanza un MSE de prueba de 0.048 para un horizonte de 10 días.
+**Usarlos en la práctica.** Chronos se carga con `ChronosPipeline.from_pretrained("amazon/chronos-t5-small")` y `pipeline.predict(context, prediction_length)` devuelve muestras de trayectorias. PatchTST está en `transformers` (`PatchTSTForPrediction`) y TimesFM tiene paquete propio con *checkpoints* en Hugging Face. El ajuste fino suele requerir pocos datos y épocas.
 
 **Cuándo merece la pena.** Con muchas series cortas y heterogéneas, o sin histórico para una serie nueva (arranque en frío), un modelo fundacional en modo *zero-shot* es difícil de batir. Con una sola serie larga y muy estable, un modelo estadístico bien ajustado puede ser igual de bueno y mucho más barato. Mide siempre el MASE frente a la línea base ingenua.
 
@@ -117,7 +117,6 @@ El notebook opcional [`10_transformers_series.ipynb`](https://github.com/joserod
 - AnomalyBERT entrena con anomalías sintéticas y detecta anomalías contextuales.
 </KeyTakeaways>
 
-**Lectura recomendada:** capítulo 2, secciones «Tokenizing Time Series Data», «Chronos», «PatchTST», «TimesFM» y «AnomalyBERT for Self-Supervised Anomaly Detection».
 
 </Section>
 
