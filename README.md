@@ -4,6 +4,8 @@
 
 El temario se organiza en **23 módulos** agrupados en cuatro partes: de la tokenización y la atención a las series temporales, la visión, la difusión, el audio, el aprendizaje por refuerzo, el razonamiento, los agentes y el despliegue.
 
+**▶ Abre el curso en el navegador: [joserodriguezc.github.io/transfomers_guide](https://joserodriguezc.github.io/transfomers_guide/)** — no hace falta instalar nada.
+
 ![Página de inicio con los módulos del curso](.github/images/inicio.png)
 
 ## Contenido
@@ -105,13 +107,20 @@ uv sync                 # crea el entorno Python
 uv run dev              # instala las dependencias de npm si faltan y abre la app
 ```
 
-La app se abre en `http://localhost:5173`. Para servirla como sitio estático (por ejemplo, en GitHub Pages: usa rutas con `#`, así que no necesita configuración de servidor):
+La app se abre en `http://localhost:5173`. Para servirla como sitio estático:
 
 ```bash
 cd app
 npm run build           # genera app/dist/
 npm run preview
 ```
+
+### Despliegue en GitHub Pages
+
+El workflow [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml) publica la app en cada push a `main`: instala las dependencias, pasa los tests, hace el build y sube `app/dist/` a GitHub Pages. También se puede lanzar a mano desde la pestaña **Actions**.
+
+- El build usa rutas relativas (`base: './'` en `app/vite.config.ts`) y la navegación usa `#`, así que funciona en la subruta `/transfomers_guide/` o en un dominio propio sin más configuración.
+- Requisito único en el repositorio: **Settings → Pages → Source: «GitHub Actions»**.
 
 ## Comandos
 

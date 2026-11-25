@@ -7,6 +7,8 @@ import remarkMath from 'remark-math'
 import { defineConfig } from 'vite'
 
 export default defineConfig({
+  // Rutas relativas: el build funciona en cualquier subruta (GitHub Pages: /transfomers_guide/) o dominio
+  base: './',
   plugins: [
     {
       enforce: 'pre',
