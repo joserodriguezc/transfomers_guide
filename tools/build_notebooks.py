@@ -237,11 +237,12 @@ NOTEBOOKS: list[tuple[str, str, str, bool, list[tuple[str, str]]]] = [
 ]
 
 
-def celda(tipo: str, texto: str) -> dict:
+def celda(tipo: str, texto: str, n: int) -> dict:
     lineas = texto.splitlines(keepends=True)
+    ident = f"celda-{n:02d}"                      # nbformat 4.5 exige un id único por celda
     if tipo == "md":
-        return {"cell_type": "markdown", "metadata": {}, "source": lineas}
-    return {"cell_type": "code", "metadata": {}, "execution_count": None, "outputs": [], "source": lineas}
+        return {"cell_type": "markdown", "id": ident, "metadata": {}, "source": lineas}
+    return {"cell_type": "code", "id": ident, "metadata": {}, "execution_count": None, "outputs": [], "source": lineas}
 
 
 def notebook(archivo: str, titulo: str, modulo: str, gpu: bool, celdas: list[tuple[str, str]]) -> dict:
@@ -250,10 +251,15 @@ def notebook(archivo: str, titulo: str, modulo: str, gpu: bool, celdas: list[tup
         f"# {titulo}\n\nNotebook opcional del **módulo {int(n)}** del curso "
         f"(en la app: `uv run dev` y la ruta `#/modulo/{modulo}`). Usa modelos reales; el módulo interactivo "
         "explica la teoría con NumPy.\n\n" + INSTALAR
-        + ("\n\n> ⚠️ **Requiere GPU** con CUDA para ejecutarse en un tiempo razonable." if gpu else "")
+        + (
+            "\n\n> ⚠️ **Requiere una GPU NVIDIA con CUDA.** En equipos sin ella (solo CPU, o con gráficas Intel o AMD) "
+            "este notebook no se puede ejecutar o es demasiado lento para ser práctico."
+            if gpu
+            else ""
+        )
     )
     return {
-        "cells": [celda("md", cabecera)] + [celda(t, s) for t, s in celdas],
+        "cells": [celda("md", cabecera, 0)] + [celda(t, s, i) for i, (t, s) in enumerate(celdas, start=1)],
         "metadata": {
             "kernelspec": {"display_name": "Python 3", "language": "python", "name": "python3"},
             "language_info": {"name": "python"},
