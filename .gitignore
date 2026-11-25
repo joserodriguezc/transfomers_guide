@@ -8,3 +8,6 @@ __pycache__/
 
 # Notebooks
 .ipynb_checkpoints/
+
+# Material local (no se versiona)
+docs/
