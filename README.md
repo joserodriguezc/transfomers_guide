@@ -4,6 +4,8 @@
 
 El temario se organiza en **23 módulos** agrupados en cuatro partes: de la tokenización y la atención a las series temporales, la visión, la difusión, el audio, el aprendizaje por refuerzo, el razonamiento, los agentes y el despliegue.
 
+![Página de inicio con los módulos del curso](.github/images/inicio.png)
+
 ## Contenido
 
 - [Características](#características)
@@ -33,9 +35,26 @@ El temario se organiza en **23 módulos** agrupados en cuatro partes: de la toke
 
 **Visualizaciones interactivas.** 38 componentes propios en SVG: fusiones BPE paso a paso, una query arrastrable frente a seis keys, matrices de atención y máscaras, RoPE como rotación, el problema de la aguja en el pajar, la calculadora de la KV cache, la softmax en línea de FlashAttention, parches de PatchTST y cubetas de Chronos, ventanas desplazadas de Swin, un clic de Segment Anything, el proceso de difusión sobre una espiral, la guía sin clasificador, espectrogramas y escala mel, cuantización vectorial residual, Decision Transformer, MCTS, Muon, cuantización con valores atípicos y más.
 
+![Atención: una query arrastrable frente a seis keys, con los pesos de la softmax en vivo (modo oscuro)](.github/images/atencion.png)
+
+<table>
+  <tr>
+    <td width="50%"><img src=".github/images/difusion.png" alt="Difusión: la espiral de datos se convierte en ruido según el paso t y el programa de ruido"></td>
+    <td width="50%"><img src=".github/images/sam.png" alt="Segment Anything: un clic como prompt y las tres hipótesis de máscara"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>Difusión: el proceso hacia delante sobre una espiral</sub></td>
+    <td align="center"><sub>Segment Anything: un clic y tres hipótesis de máscara</sub></td>
+  </tr>
+</table>
+
 **Python real en el navegador.** Las celdas se ejecutan con [Pyodide](https://pyodide.org) (CPython compilado a WebAssembly) dentro de un Web Worker, sin servidor. Los laboratorios implementan cada mecanismo **desde cero con NumPy** (atención, RoPE, KV cache, FlashAttention por bloques, DDPM, RVQ, GRPO, Newton–Schulz…), así que se entienden por dentro y se pueden modificar.
 
+<p align="center"><img src=".github/images/celda-python.png" alt="Celda de Python ejecutada en el navegador: muestreo DDPM con un gráfico de matplotlib" width="620"></p>
+
 **Notación siempre explicada.** Bajo cada fórmula, un bloque «Notación» aclara automáticamente sus símbolos (softmax, ℝⁿ, ∑, ‖·‖, 𝔼, 𝒩, ⊙, τ, θ…). La página **Notación y referencia** reúne el glosario con buscador, el alfabeto griego del curso y una hoja de referencia «transformers en NumPy».
+
+![Fórmula de RoPE con su lectura en palabras y la notación explicada](.github/images/formula.png)
 
 **Progreso guardado.** Un módulo se completa con el 70 % de aciertos en sus preguntas. El progreso se guarda en el navegador (`localStorage`). Incluye modo claro y oscuro.
 
